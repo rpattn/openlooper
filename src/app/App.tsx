@@ -1,0 +1,541 @@
+import { Crosshair, LocateFixed, Maximize2 } from "lucide-react";
+import { useCallback, useEffect, useReducer, useRef } from "react";
+import { closestSegment, routeBounds } from "../domain/geometry";
+import { loopSeeds, scaleLoop } from "../domain/loops";
+import type {
+  Coordinate,
+  RouteAlternative,
+  RouteIssue,
+  RoutePlan,
+  RouteResult,
+  Waypoint,
+} from "../domain/models";
+import { waypoint } from "../domain/models";
+import { analyzeRoute, mapEdges } from "../domain/route-analysis";
+import {
+  hasDisconnectedJump,
+  LOOP_LIMITS,
+  repeatedCoverage,
+  routeSimilarity,
+  scoreRoute,
+} from "../domain/route-scoring";
+import { RouteMap } from "../map/RouteMap";
+import {
+  routePlan as requestRoute,
+  traceRoute,
+} from "../routing/valhalla-client";
+import { LocationSearch } from "../ui/LocationSearch";
+import { PlannerSheet } from "../ui/PlannerSheet";
+import { persist, restore } from "./persistence";
+import { normalizedWaypoints, reducer, routePlan } from "./state";
+
+async function pool<T, R>(
+  items: T[],
+  limit: number,
+  work: (item: T, index: number) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+  const output: PromiseSettledResult<R>[] = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const index = cursor++;
+      try {
+        output[index] = {
+          status: "fulfilled",
+          value: await work(items[index]!, index),
+        };
+      } catch (reason) {
+        output[index] = { status: "rejected", reason };
+      }
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, worker),
+  );
+  return output;
+}
+
+function focusedRoute(route: RouteResult, issue: RouteIssue): RouteResult {
+  return { ...route, bounds: routeBounds(issue.geometry) };
+}
+
+async function attributeRoute(
+  result: RouteResult,
+  plan: RoutePlan,
+  signal?: AbortSignal,
+): Promise<RouteResult> {
+  const trace = await traceRoute(result, plan.activity, signal);
+  const edges = mapEdges(trace.edges ?? [], result.geometry.length);
+  if (!edges.length)
+    throw new Error("Route attribution did not align to the returned route.");
+  return {
+    ...result,
+    edges,
+    issues: analyzeRoute(result, edges, plan.activity),
+  };
+}
+
+export function App() {
+  const [state, dispatch] = useReducer(reducer, undefined, restore);
+  const requestId = useRef(0);
+  const controller = useRef<AbortController | undefined>(undefined);
+  const mapApi = useRef<{
+    fit: (route?: RouteResult) => void;
+    fly: (coordinate: Coordinate, zoom?: number) => void;
+  } | null>(null);
+  const currentState = useRef(state);
+  currentState.current = state;
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => persist(state), 350);
+    return () => window.clearTimeout(timer);
+  }, [state]);
+
+  const analyze = useCallback(
+    async (result: RouteResult, plan: RoutePlan, signal?: AbortSignal) => {
+      try {
+        return await attributeRoute(result, plan, signal);
+      } catch (error) {
+        if ((error as Error).name === "AbortError") throw error;
+        return result;
+      }
+    },
+    [],
+  );
+
+  const calculate = useCallback(
+    async (plan: RoutePlan, fit = true) => {
+      if (plan.waypoints.length < 2) return;
+      controller.current?.abort();
+      const abort = new AbortController();
+      controller.current = abort;
+      const id = ++requestId.current;
+      dispatch({ type: "routeStart" });
+      try {
+        const routes = await requestRoute(plan, abort.signal, true);
+        const selected = await analyze(routes[0]!, plan, abort.signal);
+        if (id !== requestId.current) return;
+        const alternatives: RouteAlternative[] = routes.map(
+          (result, index) => ({
+            id: `route-${result.id}`,
+            result: index === 0 ? selected : result,
+            label:
+              index === 0 ? "Suggested route" : "Alternative from Valhalla",
+          }),
+        );
+        dispatch({ type: "routeSuccess", route: selected, alternatives });
+        if (fit) requestAnimationFrame(() => mapApi.current?.fit(selected));
+      } catch (error) {
+        if ((error as Error).name !== "AbortError" && id === requestId.current)
+          dispatch({ type: "routeError", error: (error as Error).message });
+      }
+    },
+    [analyze],
+  );
+
+  const setWaypoints = useCallback(
+    (points: Waypoint[], recalculate = true) => {
+      const clean = normalizedWaypoints(points);
+      dispatch({ type: "waypoints", waypoints: clean });
+      if (recalculate && clean.length >= 2)
+        void calculate(routePlan(currentState.current, clean), false);
+    },
+    [calculate],
+  );
+
+  const mapClick = useCallback(
+    (coordinate: Coordinate) => {
+      const current = currentState.current;
+      const points = current.plan.waypoints;
+      if (current.plan.mode === "loop") {
+        setWaypoints([waypoint(coordinate, "start")], false);
+        return;
+      }
+      if (current.activeTool === "add" && current.selectedRoute) {
+        const segment = closestSegment(
+          current.selectedRoute.geometry,
+          coordinate,
+        );
+        const legIndex = current.selectedRoute.legs.findIndex(
+          (leg) => segment <= leg.endIndex,
+        );
+        const insertion = legIndex >= 0 ? legIndex + 1 : points.length - 1;
+        setWaypoints([
+          ...points.slice(0, insertion),
+          waypoint(coordinate, "via"),
+          ...points.slice(insertion),
+        ]);
+        return;
+      }
+      if (current.plan.mode === "sketch") {
+        if (!points.length)
+          setWaypoints([waypoint(coordinate, "start")], false);
+        else if (points.length === 1)
+          setWaypoints([...points, waypoint(coordinate, "destination")]);
+        else
+          setWaypoints([
+            ...points.slice(0, -1),
+            waypoint(coordinate, "via"),
+            points.at(-1)!,
+          ]);
+        return;
+      }
+      if (current.activeTool === "start") {
+        const next = points.length
+          ? [waypoint(coordinate, "start"), ...points.slice(1)]
+          : [waypoint(coordinate, "start")];
+        setWaypoints(next, next.length >= 2);
+        dispatch({ type: "tool", tool: "destination" });
+      } else if (current.activeTool === "destination") {
+        const next =
+          points.length > 1
+            ? [
+                points[0]!,
+                ...points.slice(1, -1),
+                waypoint(coordinate, "destination"),
+              ]
+            : [...points, waypoint(coordinate, "destination")];
+        setWaypoints(next);
+      }
+    },
+    [setWaypoints],
+  );
+
+  const moveWaypoint = useCallback(
+    (id: string, coordinate: Coordinate, finished: boolean) => {
+      if (finished)
+        setWaypoints(
+          currentState.current.plan.waypoints.map((point) =>
+            point.id === id ? { ...point, coordinate } : point,
+          ),
+        );
+    },
+    [setWaypoints],
+  );
+
+  const generate = useCallback(async () => {
+    const current = currentState.current;
+    const start = current.plan.waypoints[0]?.coordinate;
+    const target = current.plan.targetDistanceKm ?? 10;
+    if (!start || target < 1) return;
+    controller.current?.abort();
+    const abort = new AbortController();
+    controller.current = abort;
+    const id = ++requestId.current;
+    dispatch({ type: "routeStart", progress: "Trying 12 loop shapes…" });
+    const seeds = loopSeeds(start, target, current.loopSeed);
+    const basePlan = { ...current.plan, mode: "loop" as const };
+    try {
+      const initial = await pool(
+        seeds,
+        LOOP_LIMITS.maxConcurrent,
+        async (seed, index) => {
+          if (abort.signal.aborted)
+            throw new DOMException("Aborted", "AbortError");
+          dispatch({
+            type: "progress",
+            progress: `Trying loop shapes… ${index + 1}/12`,
+          });
+          const [result] = await requestRoute(
+            { ...basePlan, waypoints: seed.waypoints },
+            abort.signal,
+            false,
+          );
+          return { seed, result: result! };
+        },
+      );
+      let viable = initial
+        .flatMap((item) => (item.status === "fulfilled" ? [item.value] : []))
+        .filter(
+          (item) =>
+            Math.abs(item.result.distanceKm - target) / target <=
+              LOOP_LIMITS.maxDistanceError &&
+            repeatedCoverage(item.result.geometry) <=
+              LOOP_LIMITS.maxRepeatedCoverage &&
+            !hasDisconnectedJump(item.result.geometry, target),
+        );
+      dispatch({
+        type: "progress",
+        progress: `Refining ${viable.length} promising loops…`,
+      });
+      const refined = await pool(
+        viable,
+        LOOP_LIMITS.maxConcurrent,
+        async ({ seed, result }) => {
+          const factor = Math.max(
+            LOOP_LIMITS.refinementMin,
+            Math.min(LOOP_LIMITS.refinementMax, target / result.distanceKm),
+          );
+          const adjusted = scaleLoop(seed, start, factor);
+          const [route] = await requestRoute(
+            { ...basePlan, waypoints: adjusted.waypoints },
+            abort.signal,
+            false,
+          );
+          return { seed: adjusted, result: route! };
+        },
+      );
+      viable = refined
+        .flatMap((item) => (item.status === "fulfilled" ? [item.value] : []))
+        .filter(
+          (item) =>
+            Math.abs(item.result.distanceKm - target) / target <=
+              LOOP_LIMITS.maxDistanceError &&
+            repeatedCoverage(item.result.geometry) <=
+              LOOP_LIMITS.maxRepeatedCoverage &&
+            !hasDisconnectedJump(item.result.geometry, target),
+        );
+      const shortlist = viable
+        .sort(
+          (a, b) =>
+            scoreRoute(b.result, target).score -
+            scoreRoute(a.result, target).score,
+        )
+        .slice(0, 6);
+      dispatch({
+        type: "progress",
+        progress: "Checking route surfaces and issues…",
+      });
+      const attributed = await pool(
+        shortlist,
+        LOOP_LIMITS.maxConcurrent,
+        async (item) => ({
+          ...item,
+          result: await attributeRoute(item.result, basePlan, abort.signal),
+        }),
+      );
+      const ranked = attributed
+        .flatMap((item) => (item.status === "fulfilled" ? [item.value] : []))
+        .map((item) => ({
+          ...item,
+          metrics: scoreRoute(item.result, target, item.result.issues),
+        }))
+        .sort((a, b) => b.metrics.score - a.metrics.score);
+      const distinct: typeof ranked = [];
+      for (const item of ranked) {
+        if (
+          distinct.every(
+            (other) =>
+              routeSimilarity(item.result.geometry, other.result.geometry) <=
+              LOOP_LIMITS.dedupeSimilarity,
+          )
+        )
+          distinct.push(item);
+        if (distinct.length === 3) break;
+      }
+      if (id !== requestId.current) return;
+      if (!distinct.length)
+        throw new Error(
+          "No useful loops survived around this start. Try a different distance, preference, or start point.",
+        );
+      const alternatives: RouteAlternative[] = distinct.map((item) => ({
+        id: item.seed.id,
+        result: item.result,
+        metrics: item.metrics,
+        waypoints: item.seed.waypoints,
+        label: [
+          `${Math.round(item.metrics.distanceError * 100)}% from target`,
+          item.metrics.repeatedCoverage < 0.08
+            ? "least repeated"
+            : "some repeated sections",
+          item.result.issues.some((issue) => issue.category === "surface")
+            ? "unpaved sections noted"
+            : "no surface issue found",
+        ].join(" · "),
+      }));
+      dispatch({ type: "waypoints", waypoints: alternatives[0]!.waypoints! });
+      dispatch({ type: "alternatives", alternatives });
+      if (distinct.length < 3)
+        dispatch({
+          type: "routeError",
+          error: `Found ${distinct.length} distinct loop${distinct.length === 1 ? "" : "s"}; the local network shape limited generation.`,
+        });
+      requestAnimationFrame(() => mapApi.current?.fit(alternatives[0]!.result));
+    } catch (error) {
+      if ((error as Error).name !== "AbortError" && id === requestId.current)
+        dispatch({ type: "routeError", error: (error as Error).message });
+    }
+  }, []);
+
+  function selectAlternative(id: string) {
+    const alternative = state.alternatives.find((item) => item.id === id);
+    if (!alternative) return;
+    dispatch({ type: "selectRoute", route: alternative.result });
+    if (alternative.waypoints)
+      dispatch({ type: "waypoints", waypoints: alternative.waypoints });
+    if (!alternative.result.edges.length)
+      void analyze(alternative.result, routePlan(currentState.current)).then(
+        (result) => {
+          if (currentState.current.selectedRoute?.id === result.id)
+            dispatch({ type: "selectRoute", route: result });
+        },
+      );
+    mapApi.current?.fit(alternative.result);
+  }
+
+  function locate() {
+    if (!navigator.geolocation) {
+      dispatch({
+        type: "routeError",
+        error: "Location is unavailable. Choose a start on the map.",
+      });
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const coordinate = {
+          lat: position.coords.latitude,
+          lon: position.coords.longitude,
+        };
+        mapApi.current?.fly(coordinate);
+        mapClick(coordinate);
+      },
+      () =>
+        dispatch({
+          type: "routeError",
+          error:
+            "Location permission was unavailable or denied. Choose a start on the map instead.",
+        }),
+      { enableHighAccuracy: true, timeout: 10000 },
+    );
+  }
+
+  function rerouteWith(next: Partial<RoutePlan>) {
+    controller.current?.abort();
+    requestId.current++;
+    const plan = { ...state.plan, ...next };
+    if (plan.mode === "loop" && plan.waypoints.length) window.setTimeout(() => void generate(), 0);
+    else if (plan.waypoints.length >= 2) void calculate(plan, false);
+  }
+  function selectIssue(issue: RouteIssue) {
+    dispatch({ type: "highlightIssue", id: issue.id });
+    if (state.selectedRoute)
+      mapApi.current?.fit(focusedRoute(state.selectedRoute, issue));
+  }
+
+  return (
+    <main>
+      <RouteMap
+        state={state}
+        onMapClick={mapClick}
+        onWaypointMove={moveWaypoint}
+        onCamera={(center, zoom) => dispatch({ type: "camera", center, zoom })}
+        onIssueSelect={(id) => {
+          const issue = state.selectedRoute?.issues.find(
+            (item) => item.id === id,
+          );
+          if (issue) selectIssue(issue);
+        }}
+        onEdgeSelect={(index) => dispatch({ type: "highlightEdge", index })}
+        mapApiRef={mapApi}
+      />
+      <div className="top-controls">
+        <LocationSearch
+          viewbox={[
+            {
+              lat: state.camera.center.lat - 90 / 2 ** state.camera.zoom,
+              lon: state.camera.center.lon - 180 / 2 ** state.camera.zoom,
+            },
+            {
+              lat: state.camera.center.lat + 90 / 2 ** state.camera.zoom,
+              lon: state.camera.center.lon + 180 / 2 ** state.camera.zoom,
+            },
+          ]}
+          onSelect={(coordinate) => {
+            mapApi.current?.fly(coordinate);
+            const points = state.plan.waypoints;
+            setWaypoints(
+              points.length
+                ? [{ ...points[0]!, coordinate }, ...points.slice(1)]
+                : [waypoint(coordinate, "start")],
+              points.length >= 2,
+            );
+          }}
+        />
+      </div>
+      <div className="map-actions">
+        <button onClick={locate} title="Locate me">
+          <LocateFixed />
+        </button>
+        <button
+          onClick={() => mapApi.current?.fit(state.selectedRoute)}
+          disabled={!state.selectedRoute}
+          title="Fit route"
+        >
+          <Maximize2 />
+        </button>
+        <button
+          onClick={() =>
+            mapApi.current?.fly(state.camera.center, state.camera.zoom)
+          }
+          title="Recenter"
+        >
+          <Crosshair />
+        </button>
+      </div>
+      {state.sheet === "collapsed" && (
+        <button
+          className="collapsed-route"
+          onClick={() => dispatch({ type: "sheet", sheet: "half" })}
+        >
+          <span>
+            <b>
+              {state.plan.activity[0]!.toUpperCase() +
+                state.plan.activity.slice(1)}
+            </b>{" "}
+            ·{" "}
+            {state.selectedRoute
+              ? `${state.selectedRoute.distanceKm.toFixed(1)} km · ${Math.round(state.selectedRoute.durationSeconds / 60)} min`
+              : state.loading
+                ? "Calculating route…"
+                : "Tap to plan"}
+          </span>
+          <strong>Plan & details</strong>
+        </button>
+      )}
+      <PlannerSheet
+        state={state}
+        onMode={(mode) => dispatch({ type: "mode", mode })}
+        onActivity={(activity) => {
+          dispatch({ type: "activity", activity });
+          rerouteWith({ activity });
+        }}
+        onPreferences={(preferences) => {
+          dispatch({ type: "preferences", preferences });
+          rerouteWith({ preferences });
+        }}
+        onTool={(tool) => dispatch({ type: "tool", tool })}
+        onGenerate={generate}
+        onCancel={() => {
+          controller.current?.abort();
+          requestId.current++;
+          dispatch({
+            type: "routeError",
+            error: "Route calculation stopped.",
+          });
+        }}
+        onRegenerate={() => {
+          dispatch({ type: "loopSeed" });
+          window.setTimeout(() => void generate(), 0);
+        }}
+        onSelectAlternative={selectAlternative}
+        onReverse={() => setWaypoints([...state.plan.waypoints].reverse())}
+        onRemove={(id) =>
+          setWaypoints(state.plan.waypoints.filter((point) => point.id !== id))
+        }
+        onClear={() => {
+          controller.current?.abort();
+          requestId.current++;
+          dispatch({ type: "clear" });
+        }}
+        onIssue={selectIssue}
+        onProfile={(coordinate) =>
+          dispatch({ type: "profilePoint", coordinate })
+        }
+        onEdgeDismiss={() => dispatch({ type: "highlightEdge" })}
+        onSheet={(sheet) => dispatch({ type: "sheet", sheet })}
+        onTarget={(distanceKm) => dispatch({ type: "target", distanceKm })}
+      />
+    </main>
+  );
+}

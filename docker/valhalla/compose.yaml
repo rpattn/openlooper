@@ -1,0 +1,19 @@
+services:
+  valhalla:
+    image: ghcr.io/valhalla/valhalla-scripted:3.8.3
+    container_name: openlooper-valhalla
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./data:/custom_files
+    environment:
+      tile_urls: /custom_files/local-region.osm.pbf
+      use_tiles_ignore_pbf: "False"
+      force_rebuild: "False"
+      build_elevation: "True"
+      build_admins: "True"
+      build_time_zones: "True"
+      build_tar: "True"
+      serve_tiles: "True"
+      server_threads: "4"
+    restart: unless-stopped

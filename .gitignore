@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.env
+docker/valhalla/data/*
+!docker/valhalla/data/.gitkeep
+*.log
