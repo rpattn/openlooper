@@ -25,6 +25,7 @@ export const initialState: PlannerState = {
   activeTool: "start",
   sheet: "half",
   loopSeed: 0,
+  sketchCompleted: false,
 };
 
 export type Action =
@@ -42,7 +43,11 @@ export type Action =
       route: RouteResult;
       alternatives: RouteAlternative[];
     }
-  | { type: "alternatives"; alternatives: RouteAlternative[] }
+  | {
+      type: "alternatives";
+      alternatives: RouteAlternative[];
+      preserveSelection?: boolean;
+    }
   | { type: "routeError"; error: string }
   | { type: "selectRoute"; route: RouteResult }
   | { type: "tool"; tool: PlannerState["activeTool"] }
@@ -51,6 +56,7 @@ export type Action =
   | { type: "profilePoint"; coordinate?: Coordinate }
   | { type: "sheet"; sheet: SheetState }
   | { type: "loopSeed" }
+  | { type: "finishSketch" }
   | { type: "clear" };
 
 export function reducer(state: PlannerState, action: Action): PlannerState {
@@ -69,6 +75,7 @@ export function reducer(state: PlannerState, action: Action): PlannerState {
         activeTool: "start",
         highlightedIssueId: undefined,
         highlightedEdgeIndex: undefined,
+        sketchCompleted: false,
       };
     case "activity":
       return {
@@ -131,16 +138,23 @@ export function reducer(state: PlannerState, action: Action): PlannerState {
         highlightedEdgeIndex: undefined,
       };
     case "alternatives":
+      {
+        const selected = action.preserveSelection
+          ? action.alternatives.find(
+              (item) => item.result.id === state.selectedRoute?.id,
+            )?.result
+          : undefined;
       return {
         ...state,
         loading: false,
         progress: undefined,
         error: undefined,
         alternatives: action.alternatives,
-        selectedRoute: action.alternatives[0]?.result,
+        selectedRoute: selected ?? action.alternatives[0]?.result,
         highlightedIssueId: undefined,
         highlightedEdgeIndex: undefined,
       };
+      }
     case "routeError":
       return {
         ...state,
@@ -176,6 +190,8 @@ export function reducer(state: PlannerState, action: Action): PlannerState {
       return { ...state, sheet: action.sheet };
     case "loopSeed":
       return { ...state, loopSeed: state.loopSeed + 17 };
+    case "finishSketch":
+      return { ...state, sketchCompleted: true, activeTool: "add" };
     case "clear":
       return {
         ...state,
@@ -186,6 +202,7 @@ export function reducer(state: PlannerState, action: Action): PlannerState {
         activeTool: "start",
         highlightedIssueId: undefined,
         highlightedEdgeIndex: undefined,
+        sketchCompleted: false,
       };
   }
 }

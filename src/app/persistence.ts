@@ -77,8 +77,21 @@ export function restore(): PlannerState {
     const raw = localStorage.getItem(KEY);
     if (!raw) return initialState;
     const value: unknown = JSON.parse(raw);
-    return valid(value)
-      ? {
+    if (valid(value)) {
+      const first = value.state.plan.waypoints[0]?.coordinate;
+      const restoredSketchCompleted =
+        value.state.plan.mode === "sketch" &&
+        Boolean(
+          first &&
+            value.state.plan.waypoints.some(
+              (point) =>
+                Math.hypot(
+                  point.coordinate.lat - first.lat,
+                  point.coordinate.lon - first.lon,
+                ) > 0.00001,
+            ),
+        );
+      return {
           ...value.state,
           loading: false,
           progress: undefined,
@@ -86,8 +99,15 @@ export function restore(): PlannerState {
           profilePoint: undefined,
           highlightedIssueId: undefined,
           highlightedEdgeIndex: undefined,
-        }
-      : initialState;
+          activeTool:
+            restoredSketchCompleted ? "add" : value.state.activeTool,
+          sketchCompleted:
+            value.state.plan.mode === "sketch"
+              ? restoredSketchCompleted
+              : Boolean(value.state.sketchCompleted),
+        };
+    }
+    return initialState;
   } catch {
     return initialState;
   }

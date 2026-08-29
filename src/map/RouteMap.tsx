@@ -3,7 +3,12 @@ import * as maplibregl from "maplibre-gl";
 import type { GeoJSONSource, Map as MapLibreMap, Marker } from "maplibre-gl";
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import { ACTIVITY } from "../domain/activity-profiles";
-import type { Coordinate, PlannerState, RouteResult } from "../domain/models";
+import type {
+  Coordinate,
+  PlannerState,
+  RouteResult,
+  ViewportEvidenceState,
+} from "../domain/models";
 import { viewportEvidence } from "../evidence/evidence-client";
 
 type MapApi = {
@@ -18,12 +23,14 @@ type Props = {
     coordinate: Coordinate,
     finished: boolean,
   ) => void;
+  onWaypointSelect: (id: string) => void;
   onCamera: (center: Coordinate, zoom: number) => void;
   onIssueSelect: (id: string) => void;
-  onEdgeSelect: (index: number) => void;
+  onEdgeSelect: (index?: number) => void;
   mapApiRef: React.MutableRefObject<MapApi | null>;
   viewportEvidenceSource?: string;
   showSelectedRouteEvidence: boolean;
+  onViewportEvidenceState: (state: ViewportEvidenceState) => void;
 };
 const collection = (features: GeoJSON.Feature[]) =>
   ({ type: "FeatureCollection", features }) as GeoJSON.FeatureCollection;
@@ -35,35 +42,45 @@ export function RouteMap({
   state,
   onMapClick,
   onWaypointMove,
+  onWaypointSelect,
   onCamera,
   onIssueSelect,
   onEdgeSelect,
   mapApiRef,
   viewportEvidenceSource,
   showSelectedRouteEvidence,
+  onViewportEvidenceState,
 }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<MapLibreMap | undefined>(undefined);
   const markers = useRef<Marker[]>([]);
+  const suppressMarkerClickUntil = useRef(0);
+  const viewportRequestId = useRef(0);
+  const viewportAbort = useRef<AbortController | undefined>(undefined);
+  const viewportCount = useRef(0);
   const live = useRef({
     state,
     onMapClick,
     onWaypointMove,
+    onWaypointSelect,
     onCamera,
     onIssueSelect,
     onEdgeSelect,
     viewportEvidenceSource,
     showSelectedRouteEvidence,
+    onViewportEvidenceState,
   });
   live.current = {
     state,
     onMapClick,
     onWaypointMove,
+    onWaypointSelect,
     onCamera,
     onIssueSelect,
     onEdgeSelect,
     viewportEvidenceSource,
     showSelectedRouteEvidence,
+    onViewportEvidenceState,
   };
 
   function updateSources(
@@ -245,6 +262,13 @@ export function RouteMap({
             layers: interactiveLayers,
           })
         : [];
+      if (
+        !interactive.length &&
+        live.current.state.highlightedEdgeIndex !== undefined
+      ) {
+        live.current.onEdgeSelect(undefined);
+        return;
+      }
       if (!interactive.length || live.current.state.activeTool === "add")
         live.current.onMapClick({
           lat: event.lngLat.lat,
@@ -419,27 +443,16 @@ export function RouteMap({
         if (live.current.state.activeTool === "add") return;
         if (
           instance.queryRenderedFeatures(event.point, {
-            layers: ["issue-lines"],
+            layers: [
+              "issue-lines",
+              "use-evidence-hit",
+              "selected-evidence-hit",
+            ],
           }).length
         )
           return;
         const index = Number(event.features?.[0]?.properties?.index);
         if (Number.isInteger(index)) live.current.onEdgeSelect(index);
-      });
-      instance.on("mousemove", "route-edge-hit", (event) => {
-        if (live.current.state.activeTool === "add") return;
-        if (
-          instance.queryRenderedFeatures(event.point, {
-            layers: ["issue-lines"],
-          }).length
-        )
-          return;
-        const index = Number(event.features?.[0]?.properties?.index);
-        if (
-          Number.isInteger(index) &&
-          live.current.state.highlightedEdgeIndex !== index
-        )
-          live.current.onEdgeSelect(index);
       });
       instance.on("mouseenter", "route-edge-hit", () => {
         instance.getCanvas().style.cursor = "pointer";
@@ -454,6 +467,13 @@ export function RouteMap({
         instance.getCanvas().style.cursor = "";
       });
       const evidencePopup = (event: maplibregl.MapLayerMouseEvent) => {
+        if (
+          instance.queryRenderedFeatures(event.point, {
+            layers: ["issue-lines"],
+          }).length
+        )
+          return;
+        live.current.onEdgeSelect(undefined);
         const properties = event.features?.[0]?.properties;
         if (!properties) return;
         const parse = (value: unknown): unknown => {
@@ -554,40 +574,99 @@ export function RouteMap({
     const instance = map.current;
     if (!instance) return;
     let timer: number | undefined;
-    let abort: AbortController | undefined;
+    let lastStarted = 0;
+    let disposed = false;
     const clear = () =>
       (instance.getSource("use-evidence") as GeoJSONSource | undefined)?.setData(
         collection([]),
       );
-    const load = () => {
-      window.clearTimeout(timer);
-      abort?.abort();
-      if (!viewportEvidenceSource || !instance.isStyleLoaded()) {
+    const report = (state: ViewportEvidenceState) =>
+      live.current.onViewportEvidenceState(state);
+    const request = () => {
+      timer = undefined;
+      if (
+        disposed ||
+        !live.current.viewportEvidenceSource ||
+        !instance.isStyleLoaded() ||
+        !instance.getSource("use-evidence")
+      )
+        return;
+      lastStarted = performance.now();
+      viewportAbort.current?.abort();
+      const abort = new AbortController();
+      viewportAbort.current = abort;
+      const id = ++viewportRequestId.current;
+      report({ loading: true, count: viewportCount.current });
+      const bounds = instance.getBounds();
+      void viewportEvidence(
+        [
+          bounds.getWest(),
+          bounds.getSouth(),
+          bounds.getEast(),
+          bounds.getNorth(),
+        ],
+        live.current.viewportEvidenceSource === "any"
+          ? undefined
+          : live.current.viewportEvidenceSource,
+        abort.signal,
+      )
+        .then((data) => {
+          if (disposed || id !== viewportRequestId.current) return;
+          (instance.getSource("use-evidence") as GeoJSONSource | undefined)?.setData(
+            data,
+          );
+          viewportCount.current = data.features.length;
+          report({ loading: false, count: data.features.length });
+        })
+        .catch((error) => {
+          if (
+            disposed ||
+            id !== viewportRequestId.current ||
+            (error as Error).name === "AbortError"
+          )
+            return;
+          report({
+            loading: false,
+            count: viewportCount.current,
+            error: "Refresh failed; will retry on map movement.",
+          });
+        });
+    };
+    const load = (immediate = false) => {
+      if (!live.current.viewportEvidenceSource) {
+        window.clearTimeout(timer);
+        timer = undefined;
+        viewportAbort.current?.abort();
+        viewportRequestId.current++;
         clear();
+        viewportCount.current = 0;
+        report({ loading: false, count: 0 });
         return;
       }
-      timer = window.setTimeout(() => {
-        const bounds = instance.getBounds();
-        abort = new AbortController();
-        void viewportEvidence(
-          [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()],
-          viewportEvidenceSource === "any" ? undefined : viewportEvidenceSource,
-          abort.signal,
-        )
-          .then((data) =>
-            (instance.getSource("use-evidence") as GeoJSONSource | undefined)?.setData(data),
-          )
-          .catch((error) => {
-            if ((error as Error).name !== "AbortError") clear();
-          });
-      }, 300);
-    };
-    instance.on("moveend", load);
-    load();
-    return () => {
+      if (!instance.isStyleLoaded() || !instance.getSource("use-evidence")) return;
       window.clearTimeout(timer);
-      abort?.abort();
-      instance.off("moveend", load);
+      timer = undefined;
+      if (immediate || performance.now() - lastStarted >= 750) request();
+      else
+        timer = window.setTimeout(
+          request,
+          750 - (performance.now() - lastStarted),
+        );
+    };
+    const duringMove = () => load(false);
+    const movementEnded = () => load(true);
+    const sourceReady = () => load(true);
+    instance.on("move", duringMove);
+    instance.on("moveend", movementEnded);
+    instance.on("load", sourceReady);
+    load(true);
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+      viewportAbort.current?.abort();
+      instance.off("move", duringMove);
+      instance.off("moveend", movementEnded);
+      instance.off("load", sourceReady);
     };
   }, [viewportEvidenceSource]);
 
@@ -601,10 +680,23 @@ export function RouteMap({
       element.type = "button";
       const loopReturn =
         state.plan.mode === "loop" && point.role === "destination";
+      const sketchFinishable =
+        state.plan.mode === "sketch" &&
+        !state.sketchCompleted &&
+        state.plan.waypoints.length >= 2 &&
+        (index === 0 || index === state.plan.waypoints.length - 1);
+      if (sketchFinishable) element.classList.add("waypoint-marker--finishable");
       element.setAttribute(
         "aria-label",
-        `${loopReturn ? "return to start" : point.role} point ${index + 1}`,
+        sketchFinishable
+          ? `${index === 0 ? "Close loop at start" : "Finish open sketch at endpoint"}`
+          : `${loopReturn ? "return to start" : point.role} point ${index + 1}`,
       );
+      element.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (performance.now() < suppressMarkerClickUntil.current) return;
+        live.current.onWaypointSelect(point.id);
+      });
       element.textContent =
         point.role === "start"
           ? "A"
@@ -641,7 +733,11 @@ export function RouteMap({
           false,
         );
       });
+      marker.on("dragstart", () => {
+        suppressMarkerClickUntil.current = Number.POSITIVE_INFINITY;
+      });
       marker.on("dragend", () => {
+        suppressMarkerClickUntil.current = performance.now() + 300;
         const position = marker.getLngLat();
         (instance.getSource("provisional") as GeoJSONSource)?.setData(
           collection([]),
@@ -654,7 +750,7 @@ export function RouteMap({
       });
       return marker;
     });
-  }, [state.plan.mode, state.plan.waypoints]);
+  }, [state.plan.mode, state.plan.waypoints, state.sketchCompleted]);
 
   return (
     <div ref={container} className="map" aria-label="Route planning map" />

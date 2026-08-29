@@ -103,14 +103,25 @@ export type RouteResult = {
   encodedShape?: string;
   label?: string;
 };
+export type LoopScoringWeights = {
+  distance: number;
+  repetition: number;
+  geometry: number;
+  issues: number;
+  evidence: number;
+};
 export type LoopMetrics = {
   distanceError: number;
   repeatedCoverage: number;
   compactnessPenalty: number;
   earlyReturnPenalty: number;
   issuePenalty: number;
+  distancePenaltyPoints: number;
+  repetitionPenaltyPoints: number;
+  geometryPenaltyPoints: number;
+  issuePenaltyPoints: number;
+  evidenceBonusPoints: number;
   baseScore: number;
-  evidenceBonus: number;
   score: number;
 };
 export type RouteAlternative = {
@@ -121,6 +132,11 @@ export type RouteAlternative = {
   waypoints?: Waypoint[];
 };
 export type MapCamera = { center: Coordinate; zoom: number };
+export type ViewportEvidenceState = {
+  loading: boolean;
+  error?: string;
+  count: number;
+};
 export type SheetState = "collapsed" | "half" | "full";
 export type PlannerState = {
   camera: MapCamera;
@@ -136,6 +152,7 @@ export type PlannerState = {
   profilePoint?: Coordinate;
   sheet: SheetState;
   loopSeed: number;
+  sketchCompleted: boolean;
 };
 
 export const DEFAULT_PREFERENCES: RoutingPreferences = {

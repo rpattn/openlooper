@@ -50,7 +50,7 @@ One coordinate is enough; duplicates do not add strength. Route relations mark e
 
 ## SQLite and HTTP behavior
 
-The database contains metadata, source descriptions, evidenced `network_section` rows, unique `(section_id, source_id)` records, indexes by way/source, and an RTree for viewport lookup. Geometry is WGS84 WKB; metre offsets and matching use EPSG:27700.
+The database contains metadata, source descriptions, evidenced `network_section` rows, unique `(section_id, source_id)` records, indexes by way/source, and an RTree for viewport lookup. Each `network_section.geometry_wkb` is the unsimplified WGS84 `LineString` produced by transforming the exact projected 25 m substring boundaries (with only a shorter final section). Stored section geometry is never buffered, simplified, unioned, or replaced with route-overlap geometry. Metre offsets and matching use EPSG:27700.
 
 The private read-only service exposes:
 
@@ -78,3 +78,9 @@ There are intentionally no automated tests for this prototype. Record observatio
 8. Decide from the observed overlays and route comparisons whether the binary layer is useful enough to retain or whether the 2013 material is too sparse/noisy. Either is a valid experimental result; do not infer usefulness before the full local run.
 
 Warning signs worth treating as a negative result include extremely sparse evidence, near-universal road coverage, frequent parallel-way mistakes, unexplained discontinuities, or excessive section marking.
+
+## Future pathfinding-influence experiment (not implemented)
+
+The next experiment would first upgrade pinned Valhalla 3.8.3 to a release containing `linear_cost_factors`. Before implementation, verify factor semantics and service limits against that chosen release. Upstream accepts GeoJSON or precision-6 polylines, and behavior for overlapping ranges is undefined; see [Valhalla linear cost factors](https://github.com/valhalla/valhalla/pull/5584).
+
+For each candidate search corridor, select only nearby evidenced sections, Boolean-union the selected sources, and merge only contiguous sections belonging to the same OSM way. Emit those as GeoJSON linear features with an intended mild `0.95` factor. Compare identical loop seeds with and without pathfinding influence, recording routing latency, distance changes, repetition, and quality issues. This repository does not currently upgrade Valhalla, send linear cost factors, expand the evidence endpoints, or influence pathfinding.

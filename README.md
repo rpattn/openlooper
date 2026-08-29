@@ -12,9 +12,10 @@ The browser app uses OpenFreeMap globally and a local Valhalla instance for rout
 - Draggable, removable, reversible waypoints and a routed waypoint-sketch mode.
 - Activity-specific route preferences using claims Valhalla can actually represent.
 - Twelve-seed, distance-targeted loop generation with bounded concurrency, one refinement pass, deduplication, quality ranking, and up to three choices.
+- Generated loop shaping points are treated as approximate areas: Valhalla may use a natural route edge within 150 m rather than creating a spur merely to touch an arbitrary coordinate. User-selected waypoints remain exact.
 - Distance, duration, approximate ascent/descent, interactive elevation profile, and GPX 1.1 export.
 - Geographic route notes from normalized Valhalla attributes, with explicit uncertainty for absent OSM-derived data.
-- Hover/tap inspection of attributed route segments, including normalized surface, road, infrastructure, grade, and recorded OSM-way details.
+- Click/tap inspection of attributed route segments, including normalized surface, road, infrastructure, grade, and recorded OSM-way details.
 - Submit-only Nominatim search, opt-in browser location, and map-selected starts.
 - Debounced restoration of the current map, plan, selected route, analysis, and loop alternatives after refresh.
 - An optional development-only binary route-use evidence experiment, prepared offline from current OSM route relations and the 2013 OSM GPS archive.
@@ -52,13 +53,13 @@ Confirm Valhalla is ready with `curl http://127.0.0.1:8002/status`. During devel
 
 For A→B, select an activity, use **Set start** and **Set finish**, then tap the map. If Valhalla supplies alternatives they appear beneath the summary. Drag either marker or add an intermediate point; multipoint routes deliberately stop requesting alternatives.
 
-For a loop, choose **Loop**, tap a start, set the target distance, and choose **Find loops**. OpenLooper tries rotated triangle and diamond shapes with at most four active requests, refines promising routes once, analyzes the best six, removes near-duplicates, and presents up to three. Local street-network shape may yield fewer. Selecting a loop promotes its shaping points into the editable plan.
+For a loop, choose **Loop**, tap a start, set the target distance, and choose **Find loops**. OpenLooper tries 12 rotated triangle and diamond shapes with at most four active requests, reuses candidates already within 3% of the target, and refines the strongest remaining routes once (capped at eight above 10 km and six above 20 km). It analyzes the best six, removes near-duplicates, and presents up to three. Local street-network shape may yield fewer. Selecting a loop promotes its shaping points into the editable plan.
 
-For a sketch, choose **Sketch** and tap rough places to pass. The first two taps establish start/finish; later taps insert before the finish. This is waypoint sketching—Valhalla creates all final geometry.
+For a sketch, choose **Sketch** and tap rough places to pass. Each tap extends the provisional endpoint. Once there are two distinct points, tap the current endpoint to finish an open A→B route or tap the start marker to close and finish a loop. Completed sketches use the normal add, drag, remove, and reverse editing tools. This is waypoint sketching—Valhalla creates all final geometry.
 
 Route notes can be selected to focus their exact map section. Unknown sidewalk or cycle-lane values are described as “not recorded,” never as proof that infrastructure is absent. GPX exports the selected route as a single ordered track segment.
 
-Hover a route on desktop or tap it on touch devices to inspect the attributed edge beneath it. OpenLooper first asks Valhalla for an exact `edge_walk` trace; closed loops that Valhalla reports as ambiguous retry with its `walk_or_snap` fallback. Issue segments remain the higher-priority map interaction, while the explicit **Add point** tool takes priority over inspection.
+Click or tap a route to inspect the attributed edge beneath it; hovering changes only the pointer. A background click closes an open edge detail without editing the route. OpenLooper first asks Valhalla for an exact `edge_walk` trace; closed loops that Valhalla reports as ambiguous retry with its `walk_or_snap` fallback. Issue segments remain the higher-priority map interaction, while the explicit **Add point** tool takes priority over inspection.
 
 ## Validation commands
 
@@ -87,7 +88,7 @@ Preparation uses the exact `local-region.osm.pbf` used by Valhalla, divides curr
 
 The runtime service refuses to start unless the mounted PBF SHA-256 matches the database build metadata. Check it with `curl http://127.0.0.1:8003/status`; use `npm run evidence:logs` and `npm run evidence:down` for its lifecycle. Missing or stale evidence never blocks routing and gives no ranking bonus.
 
-Development controls can show all viewport evidence or one source, overlay evidenced/unknown portions of the selected route, and enable the experimental loop-ranking bonus. The bonus is capped at three points, treats all sources equally, never applies to a route with a high-severity issue, and only reorders the same generated candidates.
+The planner's development tools can show all viewport evidence or one human-labelled source, overlay evidenced/unknown portions of the selected route, and tune completed-candidate ranking. Defaults allocate 50 points to route issues, 25 to repetition, 15 to target-distance accuracy, and 10 to loop geometry, with up to 5 additional evidence points. Evidence starts enabled in development, treats all sources equally, remains neutral when unavailable, never benefits a route with a high-severity issue, and only reorders the same generated candidates. Settings are session-only.
 
 See [Route-use evidence preparation and validation](docs/route-use-evidence.md) for archive origin, licensing, matching rules, endpoints, resource requirements, and the manual validation checklist.
 

@@ -298,6 +298,8 @@ def create_database(
             continue
         start_m = section_index * SECTION_LENGTH_M
         end_m = min(way.length_m, start_m + SECTION_LENGTH_M)
+        # Preserve the exact unsimplified 25 m network substring. Runtime route
+        # overlaps are derived separately and must never replace this geometry.
         projected_section = substring(way.line_projected, start_m, end_m)
         section = transform(to_wgs84.transform, projected_section)
         if not isinstance(section, LineString) or section.is_empty:

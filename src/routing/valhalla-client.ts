@@ -7,6 +7,8 @@ import type {
 } from "./valhalla-types";
 
 const BASE = import.meta.env.VITE_VALHALLA_URL ?? "/api/valhalla";
+// Generated bearings describe an area to shape the loop, not a place to visit.
+const GENERATED_LOOP_RADIUS_M = 150;
 
 class RoutingError extends Error {
   constructor(message: string, readonly errorCode?: number) {
@@ -53,12 +55,23 @@ async function post<T>(
 }
 
 function locations(plan: RoutePlan) {
-  return plan.waypoints.map((point, index) => ({
-    lat: point.coordinate.lat,
-    lon: point.coordinate.lon,
-    type:
-      index === 0 || index === plan.waypoints.length - 1 ? "break" : "through",
-  }));
+  return plan.waypoints.map((point, index) => {
+    const generated = point.role === "generated";
+    return {
+      lat: point.coordinate.lat,
+      lon: point.coordinate.lon,
+      type:
+        index === 0 || index === plan.waypoints.length - 1
+          ? "break"
+          : "through",
+      ...(generated
+        ? {
+            radius: GENERATED_LOOP_RADIUS_M,
+            rank_candidates: false,
+          }
+        : {}),
+    };
+  });
 }
 
 export async function routePlan(

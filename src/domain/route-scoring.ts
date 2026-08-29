@@ -2,9 +2,18 @@ import { distanceKm } from "./geometry";
 import type {
   Coordinate,
   LoopMetrics,
+  LoopScoringWeights,
   RouteIssue,
   RouteResult,
 } from "./models";
+
+export const DEFAULT_LOOP_SCORING_WEIGHTS: LoopScoringWeights = {
+  distance: 15,
+  repetition: 25,
+  geometry: 10,
+  issues: 50,
+  evidence: 5,
+};
 
 export const LOOP_LIMITS = {
   maxDistanceError: 0.3,
@@ -60,6 +69,7 @@ export function scoreRoute(
   target: number,
   issues: RouteIssue[] = [],
   evidenceRanking = false,
+  weights: LoopScoringWeights = DEFAULT_LOOP_SCORING_WEIGHTS,
 ): LoopMetrics {
   const error = Math.abs(route.distanceKm - target) / target;
   const repeated = repeatedCoverage(route.geometry);
@@ -90,19 +100,29 @@ export function scoreRoute(
     0,
   );
   const issuePenalty = Math.min(1, issueKm / Math.max(route.distanceKm, 1));
+  const distancePenaltyPoints = Math.min(1, error / 0.3) * weights.distance;
+  const repetitionPenaltyPoints = Math.min(1, repeated) * weights.repetition;
+  const geometryPenaltyPoints =
+    Math.max(compactnessPenalty, early) * weights.geometry;
+  const issuePenaltyPoints = issuePenalty * weights.issues;
+  const maximumBaseScore =
+    weights.distance + weights.repetition + weights.geometry + weights.issues;
   const baseScore = Math.max(
     0,
-    100 -
-      (Math.min(1, error / 0.3) * 45 +
-        repeated * 25 +
-        Math.max(compactnessPenalty, early) * 10 +
-        issuePenalty * 20),
+    maximumBaseScore -
+      distancePenaltyPoints -
+      repetitionPenaltyPoints -
+      geometryPenaltyPoints -
+      issuePenaltyPoints,
   );
-  const evidenceBonus =
+  const evidenceBonusPoints =
     evidenceRanking &&
     route.useEvidence?.status === "available" &&
     !issues.some((issue) => issue.severity === "high")
-      ? Math.min(3, (route.useEvidence.evidencedDistancePct / 100) * 3)
+      ? Math.min(
+          weights.evidence,
+          (route.useEvidence.evidencedDistancePct / 100) * weights.evidence,
+        )
       : 0;
   return {
     distanceError: error,
@@ -110,8 +130,28 @@ export function scoreRoute(
     compactnessPenalty,
     earlyReturnPenalty: early,
     issuePenalty,
+    distancePenaltyPoints,
+    repetitionPenaltyPoints,
+    geometryPenaltyPoints,
+    issuePenaltyPoints,
+    evidenceBonusPoints,
     baseScore,
-    evidenceBonus,
-    score: baseScore + evidenceBonus,
+    score: baseScore + evidenceBonusPoints,
   };
+}
+
+export function repetitionDescription(repeated: number): string {
+  if (repeated < 0.04) return "very little repetition";
+  if (repeated < 0.08) return "low repetition";
+  if (repeated < 0.16) return "some repeated sections";
+  return "substantial repetition";
+}
+
+export function surfaceConcernPercentage(route: RouteResult): number {
+  const concernKm = route.issues
+    .filter(
+      (issue) => issue.category === "surface" && issue.confidence !== "unknown",
+    )
+    .reduce((total, issue) => total + issue.lengthKm, 0);
+  return Math.min(100, (concernKm / Math.max(route.distanceKm, 0.001)) * 100);
 }

@@ -1,6 +1,6 @@
 import { Crosshair, LocateFixed, Maximize2 } from "lucide-react";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { closestSegment, routeBounds } from "../domain/geometry";
+import { closestSegment, distanceKm, routeBounds } from "../domain/geometry";
 import { loopSeeds, scaleLoop } from "../domain/loops";
 import type {
   Coordinate,
@@ -8,6 +8,8 @@ import type {
   RouteIssue,
   RoutePlan,
   RouteResult,
+  LoopScoringWeights,
+  ViewportEvidenceState,
   Waypoint,
 } from "../domain/models";
 import { waypoint } from "../domain/models";
@@ -18,11 +20,14 @@ import {
 } from "../evidence/evidence-client";
 import { analyzeRoute, mapEdges } from "../domain/route-analysis";
 import {
+  DEFAULT_LOOP_SCORING_WEIGHTS,
   hasDisconnectedJump,
   LOOP_LIMITS,
   repeatedCoverage,
+  repetitionDescription,
   routeSimilarity,
   scoreRoute,
+  surfaceConcernPercentage,
 } from "../domain/route-scoring";
 import { RouteMap } from "../map/RouteMap";
 import {
@@ -65,6 +70,22 @@ function focusedRoute(route: RouteResult, issue: RouteIssue): RouteResult {
   return { ...route, bounds: routeBounds(issue.geometry) };
 }
 
+function loopLabel(
+  result: RouteResult,
+  metrics: NonNullable<RouteAlternative["metrics"]>,
+) {
+  const evidence =
+    result.useEvidence?.status === "available"
+      ? `${Math.round(result.useEvidence.evidencedDistancePct)}% evidenced distance`
+      : "evidenced distance unavailable";
+  return [
+    `${Math.round(metrics.distanceError * 100)}% target error`,
+    repetitionDescription(metrics.repeatedCoverage),
+    `${Math.round(surfaceConcernPercentage(result))}% recorded unpaved/rough concern`,
+    evidence,
+  ].join(" · ");
+}
+
 async function attributeRoute(
   result: RouteResult,
   plan: RoutePlan,
@@ -90,8 +111,14 @@ export function App() {
   const [evidenceService, setEvidenceService] = useState<EvidenceStatus>();
   const [viewportEvidenceSource, setViewportEvidenceSource] = useState<string>();
   const [selectedRouteEvidence, setSelectedRouteEvidence] = useState(false);
-  const [evidenceRanking, setEvidenceRanking] = useState(false);
-  const evidenceRankingRef = useRef(false);
+  const [evidenceRanking, setEvidenceRanking] = useState(import.meta.env.DEV);
+  const evidenceRankingRef = useRef(import.meta.env.DEV);
+  const [scoringWeights, setScoringWeights] = useState<LoopScoringWeights>(
+    DEFAULT_LOOP_SCORING_WEIGHTS,
+  );
+  const scoringWeightsRef = useRef(scoringWeights);
+  const [viewportEvidenceState, setViewportEvidenceState] =
+    useState<ViewportEvidenceState>({ loading: false, count: 0 });
   const requestId = useRef(0);
   const controller = useRef<AbortController | undefined>(undefined);
   const mapApi = useRef<{
@@ -199,16 +226,19 @@ export function App() {
         return;
       }
       if (current.plan.mode === "sketch") {
+        if (current.sketchCompleted) return;
         if (!points.length)
           setWaypoints([waypoint(coordinate, "start")], false);
         else if (points.length === 1)
           setWaypoints([...points, waypoint(coordinate, "destination")]);
-        else
+        else {
+          const previousEnd = points.at(-1)!;
           setWaypoints([
             ...points.slice(0, -1),
-            waypoint(coordinate, "via"),
-            points.at(-1)!,
+            { ...previousEnd, role: "via" },
+            waypoint(coordinate, "destination"),
           ]);
+        }
         return;
       }
       if (current.activeTool === "start") {
@@ -240,6 +270,36 @@ export function App() {
             point.id === id ? { ...point, coordinate } : point,
           ),
         );
+    },
+    [setWaypoints],
+  );
+
+  const selectWaypoint = useCallback(
+    (id: string) => {
+      const current = currentState.current;
+      if (current.plan.mode !== "sketch" || current.sketchCompleted) return;
+      const points = current.plan.waypoints;
+      if (points.length < 2) return;
+      const first = points[0]!;
+      const last = points.at(-1)!;
+      if (
+        !points.some(
+          (point) => distanceKm(first.coordinate, point.coordinate) >= 0.001,
+        )
+      )
+        return;
+      if (id === last.id) {
+        dispatch({ type: "finishSketch" });
+        return;
+      }
+      if (id === first.id) {
+        setWaypoints([
+          ...points.slice(0, -1),
+          { ...last, role: "via" },
+          waypoint(first.coordinate, "destination"),
+        ]);
+        dispatch({ type: "finishSketch" });
+      }
     },
     [setWaypoints],
   );
@@ -285,6 +345,26 @@ export function App() {
               LOOP_LIMITS.maxRepeatedCoverage &&
             !hasDisconnectedJump(item.result.geometry, target),
         );
+      const refinementLimit = target > 20 ? 6 : target > 10 ? 8 : viable.length;
+      viable = viable
+        .sort(
+          (a, b) =>
+            scoreRoute(
+              b.result,
+              target,
+              [],
+              false,
+              scoringWeightsRef.current,
+            ).score -
+            scoreRoute(
+              a.result,
+              target,
+              [],
+              false,
+              scoringWeightsRef.current,
+            ).score,
+        )
+        .slice(0, refinementLimit);
       dispatch({
         type: "progress",
         progress: `Refining ${viable.length} promising loops…`,
@@ -293,6 +373,8 @@ export function App() {
         viable,
         LOOP_LIMITS.maxConcurrent,
         async ({ seed, result }) => {
+          if (Math.abs(result.distanceKm - target) / target <= 0.03)
+            return { seed, result };
           const factor = Math.max(
             LOOP_LIMITS.refinementMin,
             Math.min(LOOP_LIMITS.refinementMax, target / result.distanceKm),
@@ -319,8 +401,20 @@ export function App() {
       const shortlist = viable
         .sort(
           (a, b) =>
-            scoreRoute(b.result, target).score -
-            scoreRoute(a.result, target).score,
+            scoreRoute(
+              b.result,
+              target,
+              [],
+              false,
+              scoringWeightsRef.current,
+            ).score -
+            scoreRoute(
+              a.result,
+              target,
+              [],
+              false,
+              scoringWeightsRef.current,
+            ).score,
         )
         .slice(0, 6);
       dispatch({
@@ -344,6 +438,7 @@ export function App() {
             target,
             item.result.issues,
             evidenceRankingRef.current,
+            scoringWeightsRef.current,
           ),
         }))
         .sort((a, b) => b.metrics.score - a.metrics.score);
@@ -369,15 +464,7 @@ export function App() {
         result: item.result,
         metrics: item.metrics,
         waypoints: item.seed.waypoints,
-        label: [
-          `${Math.round(item.metrics.distanceError * 100)}% from target`,
-          item.metrics.repeatedCoverage < 0.08
-            ? "least repeated"
-            : "some repeated sections",
-          item.result.issues.some((issue) => issue.category === "surface")
-            ? "unpaved sections noted"
-            : "no surface issue found",
-        ].join(" · "),
+        label: loopLabel(item.result, item.metrics),
       }));
       dispatch({ type: "waypoints", waypoints: alternatives[0]!.waypoints! });
       dispatch({ type: "alternatives", alternatives });
@@ -409,24 +496,43 @@ export function App() {
     mapApi.current?.fit(alternative.result);
   }
 
-  function changeEvidenceRanking(enabled: boolean) {
+  function rerankAlternatives(enabled: boolean, weights: LoopScoringWeights) {
     evidenceRankingRef.current = enabled;
     setEvidenceRanking(enabled);
+    scoringWeightsRef.current = weights;
+    setScoringWeights(weights);
     const current = currentState.current;
     if (current.plan.mode !== "loop" || !current.alternatives.length) return;
     const target = current.plan.targetDistanceKm ?? 10;
     const reordered = current.alternatives
-      .map((alternative) => ({
-        ...alternative,
-        metrics: scoreRoute(
+      .map((alternative) => {
+        const metrics = scoreRoute(
           alternative.result,
           target,
           alternative.result.issues,
           enabled,
-        ),
-      }))
+          weights,
+        );
+        return {
+          ...alternative,
+          metrics,
+          label: loopLabel(alternative.result, metrics),
+        };
+      })
       .sort((a, b) => (b.metrics?.score ?? 0) - (a.metrics?.score ?? 0));
-    dispatch({ type: "alternatives", alternatives: reordered });
+    dispatch({
+      type: "alternatives",
+      alternatives: reordered,
+      preserveSelection: true,
+    });
+  }
+
+  function changeEvidenceRanking(enabled: boolean) {
+    rerankAlternatives(enabled, scoringWeightsRef.current);
+  }
+
+  function changeScoringWeights(weights: LoopScoringWeights) {
+    rerankAlternatives(evidenceRankingRef.current, weights);
   }
 
   function locate() {
@@ -475,6 +581,7 @@ export function App() {
         state={state}
         onMapClick={mapClick}
         onWaypointMove={moveWaypoint}
+        onWaypointSelect={selectWaypoint}
         onCamera={(center, zoom) => dispatch({ type: "camera", center, zoom })}
         onIssueSelect={(id) => {
           const issue = state.selectedRoute?.issues.find(
@@ -486,19 +593,8 @@ export function App() {
         mapApiRef={mapApi}
         viewportEvidenceSource={viewportEvidenceSource}
         showSelectedRouteEvidence={selectedRouteEvidence}
+        onViewportEvidenceState={setViewportEvidenceState}
       />
-      {import.meta.env.DEV && (
-        <EvidenceControls
-          status={evidenceService}
-          viewportSource={viewportEvidenceSource}
-          onViewportSource={setViewportEvidenceSource}
-          selectedRouteEvidence={selectedRouteEvidence}
-          onSelectedRouteEvidence={setSelectedRouteEvidence}
-          evidenceRanking={evidenceRanking}
-          onEvidenceRanking={changeEvidenceRanking}
-          hasRoute={Boolean(state.selectedRoute)}
-        />
-      )}
       <div className="top-controls">
         <LocationSearch
           viewbox={[
@@ -605,6 +701,23 @@ export function App() {
         onEdgeDismiss={() => dispatch({ type: "highlightEdge" })}
         onSheet={(sheet) => dispatch({ type: "sheet", sheet })}
         onTarget={(distanceKm) => dispatch({ type: "target", distanceKm })}
+        developmentTools={
+          import.meta.env.DEV ? (
+            <EvidenceControls
+              status={evidenceService}
+              viewportSource={viewportEvidenceSource}
+              onViewportSource={setViewportEvidenceSource}
+              viewportState={viewportEvidenceState}
+              selectedRouteEvidence={selectedRouteEvidence}
+              onSelectedRouteEvidence={setSelectedRouteEvidence}
+              evidenceRanking={evidenceRanking}
+              onEvidenceRanking={changeEvidenceRanking}
+              scoringWeights={scoringWeights}
+              onScoringWeights={changeScoringWeights}
+              hasRoute={Boolean(state.selectedRoute)}
+            />
+          ) : undefined
+        }
       />
     </main>
   );

@@ -10,7 +10,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { ACTIVITY } from "../domain/activity-profiles";
 import type {
   Activity,
@@ -43,6 +43,7 @@ type Props = {
   onEdgeDismiss: () => void;
   onSheet: (sheet: PlannerState["sheet"]) => void;
   onTarget: (km: number) => void;
+  developmentTools?: ReactNode;
 };
 export function PlannerSheet(p: Props) {
   const state = p.state;
@@ -141,14 +142,18 @@ export function PlannerSheet(p: Props) {
           </section>
         ) : (
           <section className="panel-section">
-            <div className="tool-grid">
-              <button
-                className={state.activeTool === "start" ? "selected" : ""}
-                onClick={() => p.onTool("start")}
-              >
-                <MapPin />
-                Set start
-              </button>
+            <div
+              className={`tool-grid${state.plan.mode === "sketch" ? " tool-grid--sketch" : ""}`}
+            >
+              {state.plan.mode !== "sketch" && (
+                <button
+                  className={state.activeTool === "start" ? "selected" : ""}
+                  onClick={() => p.onTool("start")}
+                >
+                  <MapPin />
+                  Set start
+                </button>
+              )}
               {state.plan.mode === "pointToPoint" && (
                 <button
                   className={
@@ -162,7 +167,10 @@ export function PlannerSheet(p: Props) {
               )}
               <button
                 className={state.activeTool === "add" ? "selected" : ""}
-                disabled={!state.selectedRoute}
+                disabled={
+                  !state.selectedRoute ||
+                  (state.plan.mode === "sketch" && !state.sketchCompleted)
+                }
                 onClick={() => p.onTool("add")}
               >
                 <Plus />
@@ -171,7 +179,11 @@ export function PlannerSheet(p: Props) {
             </div>
             <p className="hint">
               {state.plan.mode === "sketch"
-                ? "Tap places you roughly want to pass. Valhalla creates the routed geometry."
+                ? state.sketchCompleted
+                  ? "Sketch complete. Use Add point or drag points to edit the routed shape."
+                  : state.plan.waypoints.length < 2
+                    ? "Tap the map to place a start and endpoint."
+                    : "Keep tapping to extend. Tap A to close a loop or the current endpoint to finish A → B."
                 : "Select a tool, then tap the map. Drag any point to edit."}
             </p>
           </section>
@@ -309,6 +321,7 @@ export function PlannerSheet(p: Props) {
             />
           </label>
         </details>
+        {p.developmentTools}
         {state.loading && (
           <div className="status status--loading">
             <span className="spinner" />
@@ -340,6 +353,17 @@ export function PlannerSheet(p: Props) {
                     {a.result.distanceKm.toFixed(1)} km
                   </strong>
                   <small>{a.label}</small>
+                  {import.meta.env.DEV && a.metrics && (
+                    <span className="score-breakdown">
+                      Distance −{a.metrics.distancePenaltyPoints.toFixed(1)} ·
+                      Repetition −
+                      {a.metrics.repetitionPenaltyPoints.toFixed(1)} · Geometry −
+                      {a.metrics.geometryPenaltyPoints.toFixed(1)} · Issues −
+                      {a.metrics.issuePenaltyPoints.toFixed(1)} · Evidence +
+                      {a.metrics.evidenceBonusPoints.toFixed(1)} · Final{" "}
+                      {a.metrics.score.toFixed(1)}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
