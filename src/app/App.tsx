@@ -1,5 +1,5 @@
 import { Crosshair, LocateFixed, Maximize2 } from "lucide-react";
-import { useCallback, useEffect, useReducer, useRef } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { closestSegment, routeBounds } from "../domain/geometry";
 import { loopSeeds, scaleLoop } from "../domain/loops";
 import type {
@@ -11,6 +11,11 @@ import type {
   Waypoint,
 } from "../domain/models";
 import { waypoint } from "../domain/models";
+import {
+  evidenceStatus,
+  routeUseEvidence,
+  type EvidenceStatus,
+} from "../evidence/evidence-client";
 import { analyzeRoute, mapEdges } from "../domain/route-analysis";
 import {
   hasDisconnectedJump,
@@ -26,6 +31,7 @@ import {
 } from "../routing/valhalla-client";
 import { LocationSearch } from "../ui/LocationSearch";
 import { PlannerSheet } from "../ui/PlannerSheet";
+import { EvidenceControls } from "../ui/EvidenceControls";
 import { persist, restore } from "./persistence";
 import { normalizedWaypoints, reducer, routePlan } from "./state";
 
@@ -68,15 +74,24 @@ async function attributeRoute(
   const edges = mapEdges(trace.edges ?? [], result.geometry.length);
   if (!edges.length)
     throw new Error("Route attribution did not align to the returned route.");
-  return {
+  const attributed = {
     ...result,
     edges,
     issues: analyzeRoute(result, edges, plan.activity),
+  };
+  return {
+    ...attributed,
+    useEvidence: await routeUseEvidence(attributed, edges, signal),
   };
 }
 
 export function App() {
   const [state, dispatch] = useReducer(reducer, undefined, restore);
+  const [evidenceService, setEvidenceService] = useState<EvidenceStatus>();
+  const [viewportEvidenceSource, setViewportEvidenceSource] = useState<string>();
+  const [selectedRouteEvidence, setSelectedRouteEvidence] = useState(false);
+  const [evidenceRanking, setEvidenceRanking] = useState(false);
+  const evidenceRankingRef = useRef(false);
   const requestId = useRef(0);
   const controller = useRef<AbortController | undefined>(undefined);
   const mapApi = useRef<{
@@ -91,13 +106,29 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [state]);
 
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const abort = new AbortController();
+    void evidenceStatus(abort.signal)
+      .then(setEvidenceService)
+      .catch(() => setEvidenceService(undefined));
+    return () => abort.abort();
+  }, []);
+
   const analyze = useCallback(
     async (result: RouteResult, plan: RoutePlan, signal?: AbortSignal) => {
       try {
         return await attributeRoute(result, plan, signal);
       } catch (error) {
         if ((error as Error).name === "AbortError") throw error;
-        return result;
+        return {
+          ...result,
+          useEvidence: {
+            status: "unavailable" as const,
+            evidencedDistanceKm: 0,
+            evidencedDistancePct: 0,
+          },
+        };
       }
     },
     [],
@@ -308,7 +339,12 @@ export function App() {
         .flatMap((item) => (item.status === "fulfilled" ? [item.value] : []))
         .map((item) => ({
           ...item,
-          metrics: scoreRoute(item.result, target, item.result.issues),
+          metrics: scoreRoute(
+            item.result,
+            target,
+            item.result.issues,
+            evidenceRankingRef.current,
+          ),
         }))
         .sort((a, b) => b.metrics.score - a.metrics.score);
       const distinct: typeof ranked = [];
@@ -373,6 +409,26 @@ export function App() {
     mapApi.current?.fit(alternative.result);
   }
 
+  function changeEvidenceRanking(enabled: boolean) {
+    evidenceRankingRef.current = enabled;
+    setEvidenceRanking(enabled);
+    const current = currentState.current;
+    if (current.plan.mode !== "loop" || !current.alternatives.length) return;
+    const target = current.plan.targetDistanceKm ?? 10;
+    const reordered = current.alternatives
+      .map((alternative) => ({
+        ...alternative,
+        metrics: scoreRoute(
+          alternative.result,
+          target,
+          alternative.result.issues,
+          enabled,
+        ),
+      }))
+      .sort((a, b) => (b.metrics?.score ?? 0) - (a.metrics?.score ?? 0));
+    dispatch({ type: "alternatives", alternatives: reordered });
+  }
+
   function locate() {
     if (!navigator.geolocation) {
       dispatch({
@@ -428,7 +484,21 @@ export function App() {
         }}
         onEdgeSelect={(index) => dispatch({ type: "highlightEdge", index })}
         mapApiRef={mapApi}
+        viewportEvidenceSource={viewportEvidenceSource}
+        showSelectedRouteEvidence={selectedRouteEvidence}
       />
+      {import.meta.env.DEV && (
+        <EvidenceControls
+          status={evidenceService}
+          viewportSource={viewportEvidenceSource}
+          onViewportSource={setViewportEvidenceSource}
+          selectedRouteEvidence={selectedRouteEvidence}
+          onSelectedRouteEvidence={setSelectedRouteEvidence}
+          evidenceRanking={evidenceRanking}
+          onEvidenceRanking={changeEvidenceRanking}
+          hasRoute={Boolean(state.selectedRoute)}
+        />
+      )}
       <div className="top-controls">
         <LocationSearch
           viewbox={[

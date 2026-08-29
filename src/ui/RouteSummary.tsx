@@ -33,6 +33,15 @@ export function RouteSummary({
           </strong>
         </div>
       )}
+      {import.meta.env.DEV && route.useEvidence && (
+        <div className="evidence-summary">
+          <strong>
+            {route.useEvidence.status === "available"
+              ? `Route distance with use evidence: ${Math.round(route.useEvidence.evidencedDistancePct)}%`
+              : "Route-use evidence unavailable"}
+          </strong>
+        </div>
+      )}
       <button
         className="secondary"
         onClick={() => downloadGpx(route, activity)}

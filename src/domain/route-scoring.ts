@@ -59,6 +59,7 @@ export function scoreRoute(
   route: RouteResult,
   target: number,
   issues: RouteIssue[] = [],
+  evidenceRanking = false,
 ): LoopMetrics {
   const error = Math.abs(route.distanceKm - target) / target;
   const repeated = repeatedCoverage(route.geometry);
@@ -89,7 +90,7 @@ export function scoreRoute(
     0,
   );
   const issuePenalty = Math.min(1, issueKm / Math.max(route.distanceKm, 1));
-  const score = Math.max(
+  const baseScore = Math.max(
     0,
     100 -
       (Math.min(1, error / 0.3) * 45 +
@@ -97,12 +98,20 @@ export function scoreRoute(
         Math.max(compactnessPenalty, early) * 10 +
         issuePenalty * 20),
   );
+  const evidenceBonus =
+    evidenceRanking &&
+    route.useEvidence?.status === "available" &&
+    !issues.some((issue) => issue.severity === "high")
+      ? Math.min(3, (route.useEvidence.evidencedDistancePct / 100) * 3)
+      : 0;
   return {
     distanceError: error,
     repeatedCoverage: repeated,
     compactnessPenalty,
     earlyReturnPenalty: early,
     issuePenalty,
-    score,
+    baseScore,
+    evidenceBonus,
+    score: baseScore + evidenceBonus,
   };
 }

@@ -41,6 +41,12 @@ export type RouteEdge = {
   lengthKm: number;
   attributes: EdgeAttributes;
 };
+export type RouteUseEvidence = {
+  status: "available" | "unavailable";
+  evidencedDistanceKm: number;
+  evidencedDistancePct: number;
+  segments?: GeoJSON.FeatureCollection;
+};
 export type EdgeAttributes = {
   name?: string;
   roadClass?: string;
@@ -93,6 +99,7 @@ export type RouteResult = {
   bounds: [Coordinate, Coordinate];
   issues: RouteIssue[];
   edges: RouteEdge[];
+  useEvidence?: RouteUseEvidence;
   encodedShape?: string;
   label?: string;
 };
@@ -102,6 +109,8 @@ export type LoopMetrics = {
   compactnessPenalty: number;
   earlyReturnPenalty: number;
   issuePenalty: number;
+  baseScore: number;
+  evidenceBonus: number;
   score: number;
 };
 export type RouteAlternative = {

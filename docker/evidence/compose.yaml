@@ -1,0 +1,14 @@
+services:
+  evidence:
+    build: .
+    container_name: openlooper-evidence
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./data/route-use-evidence.sqlite:/evidence/route-use-evidence.sqlite:ro
+      - ../valhalla/data/local-region.osm.pbf:/data/local-region.osm.pbf:ro
+    environment:
+      EVIDENCE_DATABASE: /evidence/route-use-evidence.sqlite
+      OSM_PBF: /data/local-region.osm.pbf
+      EVIDENCE_PORT: "8003"
+    restart: unless-stopped

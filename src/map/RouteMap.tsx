@@ -4,6 +4,7 @@ import type { GeoJSONSource, Map as MapLibreMap, Marker } from "maplibre-gl";
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import { ACTIVITY } from "../domain/activity-profiles";
 import type { Coordinate, PlannerState, RouteResult } from "../domain/models";
+import { viewportEvidence } from "../evidence/evidence-client";
 
 type MapApi = {
   fit: (route?: RouteResult) => void;
@@ -21,6 +22,8 @@ type Props = {
   onIssueSelect: (id: string) => void;
   onEdgeSelect: (index: number) => void;
   mapApiRef: React.MutableRefObject<MapApi | null>;
+  viewportEvidenceSource?: string;
+  showSelectedRouteEvidence: boolean;
 };
 const collection = (features: GeoJSON.Feature[]) =>
   ({ type: "FeatureCollection", features }) as GeoJSON.FeatureCollection;
@@ -36,6 +39,8 @@ export function RouteMap({
   onIssueSelect,
   onEdgeSelect,
   mapApiRef,
+  viewportEvidenceSource,
+  showSelectedRouteEvidence,
 }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<MapLibreMap | undefined>(undefined);
@@ -47,6 +52,8 @@ export function RouteMap({
     onCamera,
     onIssueSelect,
     onEdgeSelect,
+    viewportEvidenceSource,
+    showSelectedRouteEvidence,
   });
   live.current = {
     state,
@@ -55,9 +62,15 @@ export function RouteMap({
     onCamera,
     onIssueSelect,
     onEdgeSelect,
+    viewportEvidenceSource,
+    showSelectedRouteEvidence,
   };
 
-  function updateSources(instance: MapLibreMap, current: PlannerState) {
+  function updateSources(
+    instance: MapLibreMap,
+    current: PlannerState,
+    showEvidence: boolean,
+  ) {
     const set = (id: string, features: GeoJSON.Feature[]) =>
       (instance.getSource(id) as GeoJSONSource | undefined)?.setData(
         collection(features),
@@ -165,6 +178,28 @@ export function RouteMap({
           ]
         : [],
     );
+    const evidenceAvailable =
+      current.selectedRoute?.useEvidence?.status === "available";
+    set(
+      "selected-evidence-route",
+      showEvidence && evidenceAvailable && current.selectedRoute
+        ? [
+            {
+              type: "Feature",
+              properties: {},
+              geometry: {
+                type: "LineString",
+                coordinates: coordinates(current.selectedRoute.geometry),
+              },
+            },
+          ]
+        : [],
+    );
+    (instance.getSource("selected-evidence") as GeoJSONSource | undefined)?.setData(
+      showEvidence && evidenceAvailable
+        ? (current.selectedRoute?.useEvidence?.segments ?? collection([]))
+        : collection([]),
+    );
     if (instance.getLayer("selected-line"))
       instance.setPaintProperty(
         "selected-line",
@@ -199,9 +234,15 @@ export function RouteMap({
       "top-right",
     );
     instance.on("click", (event) => {
-      const interactive = instance.getLayer("route-edge-hit")
+      const interactiveLayers = [
+        "route-edge-hit",
+        "issue-lines",
+        "use-evidence-hit",
+        "selected-evidence-hit",
+      ].filter((id) => instance.getLayer(id));
+      const interactive = interactiveLayers.length
         ? instance.queryRenderedFeatures(event.point, {
-            layers: ["route-edge-hit", "issue-lines"],
+            layers: interactiveLayers,
           })
         : [];
       if (!interactive.length || live.current.state.activeTool === "add")
@@ -226,6 +267,9 @@ export function RouteMap({
         "issues",
         "highlight",
         "cursor",
+        "use-evidence",
+        "selected-evidence-route",
+        "selected-evidence",
       ])
         instance.addSource(id, { type: "geojson", data: collection([]) });
       instance.addLayer({
@@ -236,6 +280,25 @@ export function RouteMap({
           "line-color": "#66736b",
           "line-width": 4,
           "line-opacity": 0.38,
+        },
+      });
+      instance.addLayer({
+        id: "use-evidence-lines",
+        type: "line",
+        source: "use-evidence",
+        paint: {
+          "line-color": "#6846a5",
+          "line-width": 5,
+        },
+      });
+      instance.addLayer({
+        id: "use-evidence-hit",
+        type: "line",
+        source: "use-evidence",
+        paint: {
+          "line-color": "#000000",
+          "line-width": 16,
+          "line-opacity": 0.01,
         },
       });
       instance.addLayer({
@@ -255,6 +318,35 @@ export function RouteMap({
         paint: {
           "line-color": ACTIVITY[live.current.state.plan.activity].color,
           "line-width": 6,
+        },
+      });
+      instance.addLayer({
+        id: "selected-evidence-unknown",
+        type: "line",
+        source: "selected-evidence-route",
+        paint: {
+          "line-color": "#737a75",
+          "line-width": 7,
+          "line-dasharray": [1.5, 1.5],
+        },
+      });
+      instance.addLayer({
+        id: "selected-evidence-lines",
+        type: "line",
+        source: "selected-evidence",
+        paint: {
+          "line-color": "#15945f",
+          "line-width": 7,
+        },
+      });
+      instance.addLayer({
+        id: "selected-evidence-hit",
+        type: "line",
+        source: "selected-evidence",
+        paint: {
+          "line-color": "#000000",
+          "line-width": 17,
+          "line-opacity": 0.01,
         },
       });
       instance.addLayer({
@@ -361,7 +453,64 @@ export function RouteMap({
       instance.on("mouseleave", "issue-lines", () => {
         instance.getCanvas().style.cursor = "";
       });
-      updateSources(instance, live.current.state);
+      const evidencePopup = (event: maplibregl.MapLayerMouseEvent) => {
+        const properties = event.features?.[0]?.properties;
+        if (!properties) return;
+        const parse = (value: unknown): unknown => {
+          if (typeof value !== "string") return value;
+          try {
+            return JSON.parse(value);
+          } catch {
+            return value;
+          }
+        };
+        const sources = parse(properties.sources);
+        const labels = parse(properties.sourceLabels);
+        const references = parse(properties.featureReferences);
+        const body = document.createElement("div");
+        body.className = "evidence-popup";
+        const title = document.createElement("strong");
+        title.textContent = properties.sectionId
+          ? `Evidence section ${String(properties.sectionId)}`
+          : "Route-use evidence";
+        body.append(title);
+        for (const text of [
+          properties.wayId ? `OSM way ${String(properties.wayId)}` : undefined,
+          Array.isArray(sources) ? `Sources: ${sources.join(", ")}` : undefined,
+          Array.isArray(labels) ? labels.join("; ") : undefined,
+          references && typeof references === "object"
+            ? `Relation references: ${Object.values(references).join(", ")}`
+            : undefined,
+        ]) {
+          if (!text) continue;
+          const line = document.createElement("span");
+          line.textContent = text;
+          body.append(line);
+        }
+        const disclaimer = document.createElement("small");
+        disclaimer.textContent =
+          "No route-use evidence means unknown, not unused, unsafe or unsuitable.";
+        body.append(disclaimer);
+        new maplibregl.Popup({ closeButton: true })
+          .setLngLat(event.lngLat)
+          .setDOMContent(body)
+          .addTo(instance);
+      };
+      instance.on("click", "use-evidence-hit", evidencePopup);
+      instance.on("click", "selected-evidence-hit", evidencePopup);
+      for (const layer of ["use-evidence-hit", "selected-evidence-hit"]) {
+        instance.on("mouseenter", layer, () => {
+          instance.getCanvas().style.cursor = "pointer";
+        });
+        instance.on("mouseleave", layer, () => {
+          instance.getCanvas().style.cursor = "";
+        });
+      }
+      updateSources(
+        instance,
+        live.current.state,
+        live.current.showSelectedRouteEvidence,
+      );
     });
     mapApiRef.current = {
       fit: (route) => {
@@ -397,8 +546,50 @@ export function RouteMap({
 
   useEffect(() => {
     const instance = map.current;
-    if (instance?.isStyleLoaded()) updateSources(instance, state);
-  }, [state]);
+    if (instance?.isStyleLoaded())
+      updateSources(instance, state, showSelectedRouteEvidence);
+  }, [state, showSelectedRouteEvidence]);
+
+  useEffect(() => {
+    const instance = map.current;
+    if (!instance) return;
+    let timer: number | undefined;
+    let abort: AbortController | undefined;
+    const clear = () =>
+      (instance.getSource("use-evidence") as GeoJSONSource | undefined)?.setData(
+        collection([]),
+      );
+    const load = () => {
+      window.clearTimeout(timer);
+      abort?.abort();
+      if (!viewportEvidenceSource || !instance.isStyleLoaded()) {
+        clear();
+        return;
+      }
+      timer = window.setTimeout(() => {
+        const bounds = instance.getBounds();
+        abort = new AbortController();
+        void viewportEvidence(
+          [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()],
+          viewportEvidenceSource === "any" ? undefined : viewportEvidenceSource,
+          abort.signal,
+        )
+          .then((data) =>
+            (instance.getSource("use-evidence") as GeoJSONSource | undefined)?.setData(data),
+          )
+          .catch((error) => {
+            if ((error as Error).name !== "AbortError") clear();
+          });
+      }, 300);
+    };
+    instance.on("moveend", load);
+    load();
+    return () => {
+      window.clearTimeout(timer);
+      abort?.abort();
+      instance.off("moveend", load);
+    };
+  }, [viewportEvidenceSource]);
 
   useEffect(() => {
     const instance = map.current;

@@ -3,4 +3,6 @@ dist/
 .env
 docker/valhalla/data/*
 !docker/valhalla/data/.gitkeep
+docker/evidence/data/*
+!docker/evidence/data/.gitkeep
 *.log

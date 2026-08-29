@@ -12,7 +12,12 @@
     "routing:prepare": "bash scripts/prepare-routing-data.sh",
     "routing:up": "docker compose -f docker/valhalla/compose.yaml up -d",
     "routing:down": "docker compose -f docker/valhalla/compose.yaml down",
-    "routing:logs": "docker compose -f docker/valhalla/compose.yaml logs -f"
+    "routing:logs": "docker compose -f docker/valhalla/compose.yaml logs -f",
+    "evidence:prepare": "bash scripts/prepare-evidence-data.sh",
+    "evidence:up": "docker compose -f docker/evidence/compose.yaml up -d",
+    "evidence:down": "docker compose -f docker/evidence/compose.yaml down",
+    "evidence:logs": "docker compose -f docker/evidence/compose.yaml logs -f",
+    "region:prepare": "npm run routing:prepare && npm run evidence:prepare"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

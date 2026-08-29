@@ -17,6 +17,7 @@ The browser app uses OpenFreeMap globally and a local Valhalla instance for rout
 - Hover/tap inspection of attributed route segments, including normalized surface, road, infrastructure, grade, and recorded OSM-way details.
 - Submit-only Nominatim search, opt-in browser location, and map-selected starts.
 - Debounced restoration of the current map, plan, selected route, analysis, and loop alternatives after refresh.
+- An optional development-only binary route-use evidence experiment, prepared offline from current OSM route relations and the 2013 OSM GPS archive.
 - One responsive map/sheet interface for phone, tablet, and desktop widths.
 
 ## Requirements
@@ -31,8 +32,9 @@ The browser app uses OpenFreeMap globally and a local Valhalla instance for rout
 
 ```sh
 npm install
-npm run routing:prepare
+npm run region:prepare
 npm run routing:up
+npm run evidence:up
 npm run dev
 ```
 
@@ -43,6 +45,8 @@ npm run routing:logs
 ```
 
 Confirm Valhalla is ready with `curl http://127.0.0.1:8002/status`. During development, Vite proxies `/api/valhalla/*` to that local service. Copy `.env.example` to `.env` only when overriding those defaults.
+
+`region:prepare` first prepares routing data, then downloads and processes the official approximately 21 GB compressed 2013 OSM GPS archive. It does not start either service. For ordinary work without the evidence experiment, the original `routing:prepare`, `routing:up`, `dev` flow still works and evidence remains neutral/unavailable.
 
 ## Planning workflows
 
@@ -74,6 +78,18 @@ There are intentionally no automated tests, test dependencies, test script, fixt
 To refresh data, remove the two source PBFs under `docker/valhalla/data/sources/` and `local-region.osm.pbf`, run `routing:prepare`, stop Valhalla, remove its generated graph/config artifacts in the data directory, then run `routing:up`. These removals are intentional local maintenance and are not automated by the project. To switch regions, provide one merged/regional PBF named `local-region.osm.pbf` and rebuild.
 
 Use `npm run routing:down` to stop the service. If startup stalls, inspect `routing:logs`, check Docker disk allocation, verify the merged PBF is non-empty, and remember elevation downloading requires network access. Both amd64 and arm64 depend on the published architecture support of the pinned images.
+
+## Route-use evidence experiment
+
+The evidence layer asks only whether a short section of the current routing network has credible evidence of use. It does not calculate popularity, frequency, recency, activity, unique users, or negative evidence. **No route-use evidence means unknown, not unused, unsafe or unsuitable.**
+
+Preparation uses the exact `local-region.osm.pbf` used by Valhalla, divides current `highway=*` ways into deterministic 25 m sections, marks accepted current OSM route relations, then streams GPX members directly from the compressed 2013 archive. Only evidenced sections enter the SQLite output. Raw regional coordinates, timestamps, contributor metadata, track structure, ordering, and journeys are never retained.
+
+The runtime service refuses to start unless the mounted PBF SHA-256 matches the database build metadata. Check it with `curl http://127.0.0.1:8003/status`; use `npm run evidence:logs` and `npm run evidence:down` for its lifecycle. Missing or stale evidence never blocks routing and gives no ranking bonus.
+
+Development controls can show all viewport evidence or one source, overlay evidenced/unknown portions of the selected route, and enable the experimental loop-ranking bonus. The bonus is capped at three points, treats all sources equally, never applies to a route with a high-severity issue, and only reorders the same generated candidates.
+
+See [Route-use evidence preparation and validation](docs/route-use-evidence.md) for archive origin, licensing, matching rules, endpoints, resource requirements, and the manual validation checklist.
 
 The county extracts can emit administrative-boundary warnings because some wider England/UK relations are clipped from those regional files. `build_admins` remains enabled; these warnings do not prevent the verified local routing graph from serving routes.
 

@@ -22,7 +22,8 @@ main {
   overflow: hidden;
 }
 button,
-input {
+input,
+select {
   font: inherit;
 }
 button:focus-visible,
@@ -31,6 +32,62 @@ summary:focus-visible,
 svg:focus-visible {
   outline: 3px solid #ef9b88;
   outline-offset: 2px;
+}
+.evidence-controls {
+  position: absolute;
+  z-index: 4;
+  top: 204px;
+  right: 10px;
+  width: 260px;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 4px 16px #141e1626;
+  font-size: 12px;
+}
+.evidence-controls > small,
+.evidence-controls p {
+  color: var(--muted);
+}
+.evidence-controls label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.evidence-controls label:first-of-type {
+  display: grid;
+}
+.evidence-controls select {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+.evidence-controls input {
+  width: 18px;
+  height: 18px;
+}
+.evidence-controls p {
+  margin: 1px 0 0;
+  line-height: 1.35;
+}
+.evidence-popup {
+  display: grid;
+  gap: 4px;
+  max-width: 290px;
+}
+.evidence-popup span,
+.evidence-popup small {
+  display: block;
+  line-height: 1.35;
+}
+.evidence-popup small {
+  color: var(--muted);
+  margin-top: 4px;
 }
 .map {
   position: absolute;
@@ -462,6 +519,11 @@ svg:focus-visible {
 .summary .secondary {
   grid-column: 1/-1;
 }
+.summary .evidence-summary {
+  grid-column: 1/-1;
+  color: #37664f;
+  font-size: 12px;
+}
 .elevation svg {
   width: 100%;
   touch-action: none;
@@ -574,6 +636,9 @@ svg:focus-visible {
   color: #68736b;
 }
 @media (max-width: 720px) {
+  .evidence-controls {
+    display: none;
+  }
   .top-controls {
     left: 10px;
     right: 66px;
