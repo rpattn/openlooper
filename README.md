@@ -18,7 +18,7 @@ The browser app uses OpenFreeMap globally and a local Valhalla instance for rout
 - Click/tap inspection of attributed route segments, including normalized surface, road, infrastructure, grade, and recorded OSM-way details.
 - Submit-only Nominatim search, opt-in browser location, and map-selected starts.
 - Debounced restoration of the current map, plan, selected route, analysis, and loop alternatives after refresh.
-- An optional development-only binary route-use evidence experiment, prepared offline from current OSM route relations and the 2013 OSM GPS archive.
+- Supported binary route-use evidence summaries and map overlays, prepared offline from current OSM route relations and the 2013 OSM GPS archive.
 - One responsive map/sheet interface for phone, tablet, and desktop widths.
 
 ## Requirements
@@ -47,7 +47,7 @@ npm run routing:logs
 
 Confirm Valhalla is ready with `curl http://127.0.0.1:8002/status`. During development, Vite proxies `/api/valhalla/*` to that local service. Copy `.env.example` to `.env` only when overriding those defaults.
 
-`region:prepare` first prepares routing data, then downloads and processes the official approximately 21 GB compressed 2013 OSM GPS archive. It does not start either service. For ordinary work without the evidence experiment, the original `routing:prepare`, `routing:up`, `dev` flow still works and evidence remains neutral/unavailable.
+`region:prepare` first prepares routing data, then downloads and processes the official approximately 21 GB compressed 2013 OSM GPS archive. It does not start either service. Routing still works when the evidence service is unavailable; the route summary reports that state and evidence remains neutral.
 
 ## Planning workflows
 
@@ -80,7 +80,7 @@ To refresh data, remove the two source PBFs under `docker/valhalla/data/sources/
 
 Use `npm run routing:down` to stop the service. If startup stalls, inspect `routing:logs`, check Docker disk allocation, verify the merged PBF is non-empty, and remember elevation downloading requires network access. Both amd64 and arm64 depend on the published architecture support of the pinned images.
 
-## Route-use evidence experiment
+## Route-use evidence
 
 The evidence layer asks only whether a short section of the current routing network has credible evidence of use. It does not calculate popularity, frequency, recency, activity, unique users, or negative evidence. **No route-use evidence means unknown, not unused, unsafe or unsuitable.**
 
@@ -88,7 +88,11 @@ Preparation uses the exact `local-region.osm.pbf` used by Valhalla, divides curr
 
 The runtime service refuses to start unless the mounted PBF SHA-256 matches the database build metadata. Check it with `curl http://127.0.0.1:8003/status`; use `npm run evidence:logs` and `npm run evidence:down` for its lifecycle. Missing or stale evidence never blocks routing and gives no ranking bonus.
 
-The planner's development tools can show all viewport evidence or one human-labelled source, overlay evidenced/unknown portions of the selected route, and tune completed-candidate ranking. Defaults allocate 50 points to route issues, 25 to repetition, 15 to target-distance accuracy, and 10 to loop geometry, with up to 5 additional evidence points. Evidence starts enabled in development, treats all sources equally, remains neutral when unavailable, never benefits a route with a high-severity issue, and only reorders the same generated candidates. Settings are session-only.
+The route summary reports the evidenced percentage in every build. The **Route-use evidence** control can show all viewport evidence or one human-labelled source and overlay evidenced/unknown portions of the selected route. Loop ranking requests summaries for the six shortlisted routes in one batch; segment GeoJSON is loaded only when a selected-route overlay is requested, so enabling an overlay never reroutes or reranks candidates.
+
+The normal ranking allocates up to 5 mild bonus points for evidence. All sources have equal Boolean effect, unavailable or missing evidence remains neutral, and a route with any high-severity issue receives no evidence bonus. Raw scoring controls and diagnostics remain development-only.
+
+The service accepts at most six routes per batch, rejects viewports exceeding 5,000 sections without replacing the current map overlay, uses six bounded workers, and keeps decoded/projected section geometry in a 128 MB cache. See the evidence documentation for request shapes and operational limits.
 
 See [Route-use evidence preparation and validation](docs/route-use-evidence.md) for archive origin, licensing, matching rules, endpoints, resource requirements, and the manual validation checklist.
 

@@ -16,6 +16,7 @@ import { waypoint } from "../domain/models";
 import {
   evidenceStatus,
   routeUseEvidence,
+  routeUseEvidenceBatch,
   type EvidenceStatus,
 } from "../evidence/evidence-client";
 import { analyzeRoute, mapEdges } from "../domain/route-analysis";
@@ -86,7 +87,7 @@ function loopLabel(
   ].join(" · ");
 }
 
-async function attributeRoute(
+async function attributeRouteGeometry(
   result: RouteResult,
   plan: RoutePlan,
   signal?: AbortSignal,
@@ -95,14 +96,27 @@ async function attributeRoute(
   const edges = mapEdges(trace.edges ?? [], result.geometry.length);
   if (!edges.length)
     throw new Error("Route attribution did not align to the returned route.");
-  const attributed = {
+  return {
     ...result,
     edges,
     issues: analyzeRoute(result, edges, plan.activity),
   };
+}
+
+async function attributeRoute(
+  result: RouteResult,
+  plan: RoutePlan,
+  signal?: AbortSignal,
+): Promise<RouteResult> {
+  const attributed = await attributeRouteGeometry(result, plan, signal);
   return {
     ...attributed,
-    useEvidence: await routeUseEvidence(attributed, edges, signal),
+    useEvidence: await routeUseEvidence(
+      attributed,
+      attributed.edges,
+      false,
+      signal,
+    ),
   };
 }
 
@@ -111,8 +125,8 @@ export function App() {
   const [evidenceService, setEvidenceService] = useState<EvidenceStatus>();
   const [viewportEvidenceSource, setViewportEvidenceSource] = useState<string>();
   const [selectedRouteEvidence, setSelectedRouteEvidence] = useState(false);
-  const [evidenceRanking, setEvidenceRanking] = useState(import.meta.env.DEV);
-  const evidenceRankingRef = useRef(import.meta.env.DEV);
+  const [evidenceRanking, setEvidenceRanking] = useState(true);
+  const evidenceRankingRef = useRef(true);
   const [scoringWeights, setScoringWeights] = useState<LoopScoringWeights>(
     DEFAULT_LOOP_SCORING_WEIGHTS,
   );
@@ -121,6 +135,9 @@ export function App() {
     useState<ViewportEvidenceState>({ loading: false, count: 0 });
   const requestId = useRef(0);
   const controller = useRef<AbortController | undefined>(undefined);
+  const evidenceOverlayController = useRef<AbortController | undefined>(
+    undefined,
+  );
   const mapApi = useRef<{
     fit: (route?: RouteResult) => void;
     fly: (coordinate: Coordinate, zoom?: number) => void;
@@ -134,13 +151,51 @@ export function App() {
   }, [state]);
 
   useEffect(() => {
-    if (!import.meta.env.DEV) return;
     const abort = new AbortController();
     void evidenceStatus(abort.signal)
       .then(setEvidenceService)
       .catch(() => setEvidenceService(undefined));
     return () => abort.abort();
   }, []);
+
+  const loadEvidenceSegments = useCallback(async (route: RouteResult) => {
+    if (!route.edges.length || route.useEvidence?.segments) return;
+    evidenceOverlayController.current?.abort();
+    const abort = new AbortController();
+    evidenceOverlayController.current = abort;
+    const evidence = await routeUseEvidence(
+      route,
+      route.edges,
+      true,
+      abort.signal,
+    );
+    if (abort.signal.aborted) return;
+    const current = currentState.current;
+    if (current.selectedRoute?.id !== route.id) return;
+    const updated = { ...route, useEvidence: evidence };
+    const alternatives = current.alternatives.map((alternative) =>
+      alternative.result.id === route.id
+        ? { ...alternative, result: updated }
+        : alternative,
+    );
+    if (alternatives.some((alternative) => alternative.result.id === route.id))
+      dispatch({
+        type: "alternatives",
+        alternatives,
+        preserveSelection: true,
+      });
+    else dispatch({ type: "selectRoute", route: updated });
+  }, []);
+
+  useEffect(() => {
+    const route = state.selectedRoute;
+    if (
+      selectedRouteEvidence &&
+      route?.useEvidence?.status === "available" &&
+      !route.useEvidence.segments
+    )
+      void loadEvidenceSegments(route);
+  }, [loadEvidenceSegments, selectedRouteEvidence, state.selectedRoute]);
 
   const analyze = useCallback(
     async (result: RouteResult, plan: RoutePlan, signal?: AbortSignal) => {
@@ -426,11 +481,38 @@ export function App() {
         LOOP_LIMITS.maxConcurrent,
         async (item) => ({
           ...item,
-          result: await attributeRoute(item.result, basePlan, abort.signal),
+          result: await attributeRouteGeometry(
+            item.result,
+            basePlan,
+            abort.signal,
+          ),
         }),
       );
-      const ranked = attributed
-        .flatMap((item) => (item.status === "fulfilled" ? [item.value] : []))
+      const attributedRoutes = attributed.flatMap((item) =>
+        item.status === "fulfilled" ? [item.value] : [],
+      );
+      dispatch({
+        type: "progress",
+        progress: "Checking route-use evidence…",
+      });
+      const evidenceById = attributedRoutes.length
+        ? await routeUseEvidenceBatch(
+            attributedRoutes.map((item) => ({
+              id: item.result.id,
+              route: item.result,
+              edges: item.result.edges,
+            })),
+            abort.signal,
+          )
+        : new Map<string, NonNullable<RouteResult["useEvidence"]>>();
+      const ranked = attributedRoutes
+        .map((item) => ({
+          ...item,
+          result: {
+            ...item.result,
+            useEvidence: evidenceById.get(item.result.id),
+          },
+        }))
         .map((item) => ({
           ...item,
           metrics: scoreRoute(
@@ -701,22 +783,20 @@ export function App() {
         onEdgeDismiss={() => dispatch({ type: "highlightEdge" })}
         onSheet={(sheet) => dispatch({ type: "sheet", sheet })}
         onTarget={(distanceKm) => dispatch({ type: "target", distanceKm })}
-        developmentTools={
-          import.meta.env.DEV ? (
-            <EvidenceControls
-              status={evidenceService}
-              viewportSource={viewportEvidenceSource}
-              onViewportSource={setViewportEvidenceSource}
-              viewportState={viewportEvidenceState}
-              selectedRouteEvidence={selectedRouteEvidence}
-              onSelectedRouteEvidence={setSelectedRouteEvidence}
-              evidenceRanking={evidenceRanking}
-              onEvidenceRanking={changeEvidenceRanking}
-              scoringWeights={scoringWeights}
-              onScoringWeights={changeScoringWeights}
-              hasRoute={Boolean(state.selectedRoute)}
-            />
-          ) : undefined
+        evidenceControls={
+          <EvidenceControls
+            status={evidenceService}
+            viewportSource={viewportEvidenceSource}
+            onViewportSource={setViewportEvidenceSource}
+            viewportState={viewportEvidenceState}
+            selectedRouteEvidence={selectedRouteEvidence}
+            onSelectedRouteEvidence={setSelectedRouteEvidence}
+            evidenceRanking={evidenceRanking}
+            onEvidenceRanking={changeEvidenceRanking}
+            scoringWeights={scoringWeights}
+            onScoringWeights={changeScoringWeights}
+            hasRoute={Boolean(state.selectedRoute)}
+          />
         }
       />
     </main>

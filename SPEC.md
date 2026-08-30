@@ -685,14 +685,43 @@
 
   No milestone creates automated tests, fixtures, test configuration, test scripts, or CI jobs.
 
-  ## 18. Explicit deferred/non-goals
+  ## 18. Supported route-use evidence
+
+  Route-use evidence is a supported product layer backed by the immutable, preparation-generated SQLite database. It is Boolean:
+  all sources have equal effect, absent evidence remains unknown, and neither presence nor absence establishes popularity or safety.
+  The generic `evidence_source` and `section_evidence` records remain the extension point for future preparation work; the runtime
+  does not introduce a speculative storage abstraction.
+
+  The local service preserves `/status`, `/evidence/sections`, and `/route-evidence`. Viewport lookup uses one joined query for
+  geometry and provenance and rejects more than 5,000 sections with `viewport_too_broad`, leaving the existing client overlay in
+  place. Route lookup batches way IDs, groups edges by OSM way, and performs Shapely 2 array operations. Six reusable workers retain
+  immutable SQLite connections, and a thread-safe 128 MB LRU retains decoded/projected sections and prepared 2.5 m buffers.
+
+  `/route-evidence` accepts additive `includeSegments`, defaulting to `true`; summary mode omits GeoJSON. `/route-evidence/batch`
+  accepts at most six identified routes, loads their union of sections once, and returns one result per identifier. Loop ranking uses
+  this summary batch. Selected-route segment geometry loads lazily only when its overlay is requested and must not trigger routing or
+  ranking. The normal route summary and concise evidence/source controls appear in every build; scoring sliders and raw diagnostics
+  remain development-only.
+
+  The normal mild evidence bonus remains enabled. Unavailable evidence is neutral, and any high-severity route receives no bonus.
+  Each service request records total, SQL, geometry, and serialization timings without retaining route coordinates. Manual acceptance
+  requires warmed p95 below 250 ms for 5–30 km single summary/segment requests and viewports up to 5,000 sections, below 750 ms for a
+  six-route summary batch, and RSS below 512 MB at six-request concurrency. If optimized Python misses a route target, replace only
+  this runtime with an API-compatible Axum/Tokio service using rusqlite, GEOS, PROJ, and Serde; preparation remains Python.
+
+  SQLite remains appropriate for the current single-instance, immutable, RTree-indexed workload. PostGIS is reconsidered only for
+  independently updated datasets, concurrent writers, multi-region remote hosting, or replicated services. PostgreSQL and graph
+  databases are outside this iteration because Valhalla owns graph traversal and evidence lookup starts with known way IDs.
+
+  ## 19. Explicit deferred/non-goals
 
   Do not build:
 
   - Automated tests of any kind, fixtures, test infrastructure, or CI test jobs.
   - Authentication, profiles, accounts, social functionality, sharing, or cloud storage.
   - Backend application, database, server persistence, or public API.
-  - Rust, microservices, a separate routing engine repository, custom graph, OSM parser, or pathfinding engine.
+  - Microservices, a separate routing engine repository, custom graph, OSM parser, or pathfinding engine. Rust is reserved solely for
+    the evidence-runtime fallback described above if the Python performance gate fails.
   - CI/CD, deployment configuration, Kubernetes, Terraform, monitoring, telemetry, or analytics.
   - API versioning, backward-compatibility layers, feature flags, plugins, or generalized provider abstractions.
   - Native mobile code, monorepo/shared package, or web/native shared UI.
@@ -702,7 +731,7 @@
   - General-purpose region management.
   - Guaranteed safety, pavement, surface, accessibility, quietness, or cycle-infrastructure claims unsupported by the data.
 
-  ## 19. Proposed CODEX.md contents
+  ## 20. Proposed CODEX.md contents
 
   # CODEX.md
 
@@ -760,7 +789,7 @@
 
   This file is created in Milestone 1 and is treated as repository-level implementation guidance.
 
-  ## 20. Proposed README.md contents
+  ## 21. Proposed README.md contents
 
   1. Project
       - What OpenLooper is.
@@ -816,4 +845,3 @@
 
   12. Prototype philosophy
       - Link to CODEX.md and restate that functionality and learning take priority over infrastructure and compatibility.
-

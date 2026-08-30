@@ -196,7 +196,8 @@ export function RouteMap({
         : [],
     );
     const evidenceAvailable =
-      current.selectedRoute?.useEvidence?.status === "available";
+      current.selectedRoute?.useEvidence?.status === "available" &&
+      Boolean(current.selectedRoute.useEvidence.segments);
     set(
       "selected-evidence-route",
       showEvidence && evidenceAvailable && current.selectedRoute
@@ -628,7 +629,11 @@ export function RouteMap({
           report({
             loading: false,
             count: viewportCount.current,
-            error: "Refresh failed; will retry on map movement.",
+            error:
+              (error as Error & { code?: string }).code ===
+              "viewport_too_broad"
+                ? "Zoom in to load evidence; the existing overlay is unchanged."
+                : "Refresh failed; the existing overlay is unchanged.",
           });
         });
     };

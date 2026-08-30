@@ -8,7 +8,7 @@ The sole purpose of this repository is to determine whether this route-planning 
 
 - NO AUTOMATED TESTS or test infrastructure.
 - NO CI/CD or production infrastructure.
-- NO GENERAL APPLICATION BACKEND, AUTHENTICATION, API VERSIONING, OR COMPATIBILITY WORK. The approved route-use experiment has one purpose-built, local-only SQLite companion service; do not generalize it.
+- NO GENERAL APPLICATION BACKEND, AUTHENTICATION, OR API VERSIONING. The supported route-use layer has one purpose-built, local-only SQLite companion service; preserve its existing HTTP paths and do not generalize it.
 - NO ARCHITECTURE FOR HYPOTHETICAL FUTURE REQUIREMENTS.
 
 When fixing a bug: reproduce it manually, implement the simplest fix, run typecheck/lint/build, and manually verify it.

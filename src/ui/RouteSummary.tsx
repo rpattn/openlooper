@@ -33,13 +33,16 @@ export function RouteSummary({
           </strong>
         </div>
       )}
-      {import.meta.env.DEV && route.useEvidence && (
+      {route.useEvidence && (
         <div className="evidence-summary">
           <strong>
             {route.useEvidence.status === "available"
-              ? `Route distance with use evidence: ${Math.round(route.useEvidence.evidencedDistancePct)}%`
+              ? `Use evidence: ${Math.round(route.useEvidence.evidencedDistancePct)}% of route distance`
               : "Route-use evidence unavailable"}
           </strong>
+          <small>
+            Missing evidence is unknown, not unused or unsafe.
+          </small>
         </div>
       )}
       <button

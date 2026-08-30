@@ -33,33 +33,34 @@ svg:focus-visible {
   outline: 3px solid #ef9b88;
   outline-offset: 2px;
 }
-.development-tools {
+.evidence-controls {
   display: grid;
   gap: 10px;
   font-size: 12px;
 }
-.development-tools summary {
+.evidence-controls summary {
   cursor: pointer;
   font-size: 14px;
   font-weight: 800;
 }
-.development-tools > :not(summary) {
+.evidence-controls > :not(summary) {
   margin-top: 10px;
 }
-.development-readiness,
-.development-tools p,
+.evidence-readiness,
+.evidence-controls p,
 .viewport-evidence-state {
   color: var(--muted);
 }
-.development-tools > label {
+.evidence-controls > label,
+.scoring-diagnostics > label {
   display: flex;
   align-items: center;
   gap: 7px;
 }
-.development-tools > label:first-of-type {
+.evidence-controls > label:first-of-type {
   display: grid;
 }
-.development-tools select {
+.evidence-controls select {
   width: 100%;
   min-height: 36px;
   padding: 0 8px;
@@ -67,12 +68,12 @@ svg:focus-visible {
   border-radius: 8px;
   background: #fff;
 }
-.development-tools input[type="checkbox"] {
+.evidence-controls input[type="checkbox"] {
   width: 18px;
   height: 18px;
   accent-color: var(--accent);
 }
-.development-tools p {
+.evidence-controls p {
   margin: 1px 0 0;
   line-height: 1.35;
 }
@@ -97,6 +98,16 @@ svg:focus-visible {
   font-weight: 800;
 }
 .development-reset {
+  margin-top: 10px;
+}
+.scoring-diagnostics {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+.scoring-diagnostics > summary {
+  font-size: 12px;
+}
+.scoring-diagnostics > :not(summary) {
   margin-top: 10px;
 }
 .evidence-popup {
@@ -562,6 +573,14 @@ svg:focus-visible {
   grid-column: 1/-1;
   color: #37664f;
   font-size: 12px;
+}
+.summary .evidence-summary {
+  display: grid;
+  gap: 2px;
+}
+.summary .evidence-summary small {
+  color: var(--muted);
+  font-weight: 400;
 }
 .elevation svg {
   width: 100%;

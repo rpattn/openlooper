@@ -43,7 +43,7 @@ type Props = {
   onEdgeDismiss: () => void;
   onSheet: (sheet: PlannerState["sheet"]) => void;
   onTarget: (km: number) => void;
-  developmentTools?: ReactNode;
+  evidenceControls?: ReactNode;
 };
 export function PlannerSheet(p: Props) {
   const state = p.state;
@@ -321,7 +321,7 @@ export function PlannerSheet(p: Props) {
             />
           </label>
         </details>
-        {p.developmentTools}
+        {p.evidenceControls}
         {state.loading && (
           <div className="status status--loading">
             <span className="spinner" />

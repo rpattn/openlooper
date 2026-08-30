@@ -33,13 +33,13 @@ export function EvidenceControls(props: Props) {
     { key: "evidence", label: "Evidence bonus", max: 15 },
   ];
   return (
-    <details className="panel-section development-tools" open>
-      <summary>Development tools</summary>
-      <small className="development-readiness">
+    <details className="panel-section evidence-controls">
+      <summary>Route-use evidence</summary>
+      <small className="evidence-readiness">
         {available ? "Evidence service ready" : "Evidence service unavailable"}
       </small>
       <label>
-        Viewport evidence
+        Map overlay
         <select
           disabled={!available}
           value={props.viewportSource ?? "off"}
@@ -69,47 +69,52 @@ export function EvidenceControls(props: Props) {
         <input
           type="checkbox"
           checked={props.selectedRouteEvidence}
-          disabled={!props.hasRoute}
+          disabled={!props.hasRoute || !available}
           onChange={(event) => props.onSelectedRouteEvidence(event.target.checked)}
         />
         Selected-route overlay
       </label>
-      <label>
-        <input
-          type="checkbox"
-          checked={props.evidenceRanking}
-          onChange={(event) => props.onEvidenceRanking(event.target.checked)}
-        />
-        Rank completed candidates with evidence
-      </label>
-      <div className="scoring-sliders">
-        {sliders.map(({ key, label, max }) => (
-          <label key={key}>
-            <span>{label}</span>
-            <output>{props.scoringWeights[key]}</output>
+      {import.meta.env.DEV && (
+        <details className="scoring-diagnostics">
+          <summary>Scoring diagnostics</summary>
+          <label>
             <input
-              type="range"
-              min="0"
-              max={max}
-              step="1"
-              value={props.scoringWeights[key]}
-              aria-label={`${label} points`}
-              onChange={(event) =>
-                props.onScoringWeights({
-                  ...props.scoringWeights,
-                  [key]: Number(event.target.value),
-                })
-              }
+              type="checkbox"
+              checked={props.evidenceRanking}
+              onChange={(event) => props.onEvidenceRanking(event.target.checked)}
             />
+            Rank completed candidates with evidence
           </label>
-        ))}
-      </div>
-      <button
-        className="secondary development-reset"
-        onClick={() => props.onScoringWeights(DEFAULT_LOOP_SCORING_WEIGHTS)}
-      >
-        Reset defaults
-      </button>
+          <div className="scoring-sliders">
+            {sliders.map(({ key, label, max }) => (
+              <label key={key}>
+                <span>{label}</span>
+                <output>{props.scoringWeights[key]}</output>
+                <input
+                  type="range"
+                  min="0"
+                  max={max}
+                  step="1"
+                  value={props.scoringWeights[key]}
+                  aria-label={`${label} points`}
+                  onChange={(event) =>
+                    props.onScoringWeights({
+                      ...props.scoringWeights,
+                      [key]: Number(event.target.value),
+                    })
+                  }
+                />
+              </label>
+            ))}
+          </div>
+          <button
+            className="secondary development-reset"
+            onClick={() => props.onScoringWeights(DEFAULT_LOOP_SCORING_WEIGHTS)}
+          >
+            Reset defaults
+          </button>
+        </details>
+      )}
       <p>No route-use evidence means unknown, not unused, unsafe or unsuitable.</p>
     </details>
   );

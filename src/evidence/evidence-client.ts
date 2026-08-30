@@ -19,8 +19,15 @@ export type EvidenceStatus = {
 async function responseJson<T>(response: Response): Promise<T> {
   const data = (await response.json().catch(() => ({}))) as T & {
     error?: string;
+    code?: string;
   };
-  if (!response.ok) throw new Error(data.error ?? `Evidence request failed (${response.status}).`);
+  if (!response.ok) {
+    const error = new Error(
+      data.error ?? `Evidence request failed (${response.status}).`,
+    ) as Error & { code?: string };
+    error.code = data.code;
+    throw error;
+  }
   return data;
 }
 
@@ -52,19 +59,23 @@ function edgeRequest(route: RouteResult, edge: RouteEdge) {
 export async function routeUseEvidence(
   route: RouteResult,
   edges: RouteEdge[],
+  includeSegments = true,
   signal?: AbortSignal,
 ): Promise<RouteUseEvidence> {
   try {
     const response = await fetch(`${BASE}/route-evidence`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ edges: edges.map((edge) => edgeRequest(route, edge)) }),
+      body: JSON.stringify({
+        edges: edges.map((edge) => edgeRequest(route, edge)),
+        includeSegments,
+      }),
       signal,
     });
     const data = await responseJson<{
       evidencedDistanceM: number;
       evidencedFraction: number;
-      segments: GeoJSON.FeatureCollection;
+      segments?: GeoJSON.FeatureCollection;
     }>(response);
     return {
       status: "available",
@@ -79,5 +90,53 @@ export async function routeUseEvidence(
       evidencedDistanceKm: 0,
       evidencedDistancePct: 0,
     };
+  }
+}
+
+type BatchRoute = { id: string; route: RouteResult; edges: RouteEdge[] };
+
+export async function routeUseEvidenceBatch(
+  routes: BatchRoute[],
+  signal?: AbortSignal,
+): Promise<Map<string, RouteUseEvidence>> {
+  const unavailable = () =>
+    ({
+      status: "unavailable",
+      evidencedDistanceKm: 0,
+      evidencedDistancePct: 0,
+    }) satisfies RouteUseEvidence;
+  try {
+    const response = await fetch(`${BASE}/route-evidence/batch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        includeSegments: false,
+        routes: routes.map(({ id, route, edges }) => ({
+          id,
+          edges: edges.map((edge) => edgeRequest(route, edge)),
+        })),
+      }),
+      signal,
+    });
+    const data = await responseJson<{
+      routes: Array<{
+        id: string;
+        evidencedDistanceM: number;
+        evidencedFraction: number;
+      }>;
+    }>(response);
+    return new Map(
+      data.routes.map((result) => [
+        result.id,
+        {
+          status: "available" as const,
+          evidencedDistanceKm: result.evidencedDistanceM / 1000,
+          evidencedDistancePct: result.evidencedFraction * 100,
+        },
+      ]),
+    );
+  } catch (error) {
+    if ((error as Error).name === "AbortError") throw error;
+    return new Map(routes.map(({ id }) => [id, unavailable()]));
   }
 }
