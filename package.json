@@ -5,6 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "native": "npm --prefix apps/openlooper-native start",
+    "native:web": "npm --prefix apps/openlooper-native run web",
+    "native:web:clear": "npm --prefix apps/openlooper-native run web:clear",
+    "native:check": "npm --prefix apps/openlooper-native run check",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "build": "tsc --noEmit && vite build",

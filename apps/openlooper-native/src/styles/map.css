@@ -1,0 +1,53 @@
+.planner-map-shell,
+.planner-map {
+  position: absolute;
+  inset: 0;
+}
+
+.map-status {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: #e9eee8;
+  color: #68736b;
+  font: 700 14px Inter, system-ui, sans-serif;
+}
+
+.map-status--error {
+  padding: 24px;
+  color: #9e2636;
+  text-align: center;
+}
+
+.maplibregl-ctrl-group button {
+  width: 44px;
+  height: 44px;
+}
+
+.waypoint-marker {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 3px solid #fff;
+  border-radius: 50%;
+  background: #29332b;
+  color: #fff;
+  box-shadow: 0 3px 10px #0005;
+  font: 800 14px Inter, system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.waypoint-marker--start {
+  background: #177657;
+}
+
+.waypoint-marker--destination {
+  background: #b83c34;
+}
+
+.waypoint-marker--via {
+  width: 32px;
+  height: 32px;
+  background: #273f78;
+}

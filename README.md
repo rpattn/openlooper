@@ -47,7 +47,23 @@ npm run routing:logs
 
 Confirm Valhalla is ready with `curl http://127.0.0.1:8002/status`. During development, Vite proxies `/api/valhalla/*` to that local service. Copy `.env.example` to `.env` only when overriding those defaults.
 
+<<<<<<< HEAD
 `region:prepare` first prepares routing data, then downloads and processes the official approximately 21 GB compressed 2013 OSM GPS archive. It does not start either service. Routing still works when the evidence service is unavailable; the route summary reports that state and evidence remains neutral.
+
+### Expo native/web client
+
+The frontend is also being translated into a universal Expo SDK 57 app under `apps/openlooper-native`. It currently ports the responsive planner shell, activity and creation-mode controls, waypoint/sketch state, native maps, and a Leaflet web map. Run it from the repository root with:
+
+```sh
+npm run native
+npm run native:web
+npm run native:check
+```
+
+The existing Vite app remains the complete reference implementation during migration. See [`apps/openlooper-native/README.md`](apps/openlooper-native/README.md) for the migration boundary and next slices.
+
+`region:prepare` first prepares routing data, then downloads and processes the official approximately 21 GB compressed 2013 OSM GPS archive. It does not start either service. For ordinary work without the evidence experiment, the original `routing:prepare`, `routing:up`, `dev` flow still works and evidence remains neutral/unavailable.
+>>>>>>> 96d9fce (add expo draft)
 
 ## Planning workflows
 
