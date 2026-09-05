@@ -15,6 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { DEFAULT_LOOP_SCORING_WEIGHTS } from '../../../../src/domain/route-scoring';
 import { ACTIVITY, CREATION_MODES } from '@/domain/models';
+import { NOMINATIM_URL } from '@/services/endpoints';
 import type {
   Coordinate,
   LoopScoringWeights,
@@ -53,8 +54,7 @@ type Props = {
 };
 
 type SearchResult = { place_id: number; display_name: string; lat: string; lon: string };
-const SEARCH_ENDPOINT =
-  process.env.EXPO_PUBLIC_NOMINATIM_URL ?? 'https://nominatim.openstreetmap.org';
+const SEARCH_ENDPOINT = NOMINATIM_URL;
 let lastSearch = 0;
 
 export function PlannerSheet(props: Props) {

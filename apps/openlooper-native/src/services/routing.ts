@@ -1,5 +1,3 @@
-import { Platform } from 'react-native';
-
 import { costingOptions } from '../../../../src/domain/activity-profiles';
 import type { RoutePlan, RouteResult } from '../../../../src/domain/models';
 import { encodePolyline, mapTrip } from '../../../../src/routing/valhalla-mapper';
@@ -7,10 +5,8 @@ import type {
   ValhallaRouteResponse,
   ValhallaTraceResponse,
 } from '../../../../src/routing/valhalla-types';
+import { VALHALLA_URL as BASE } from './endpoints';
 
-const BASE =
-  process.env.EXPO_PUBLIC_VALHALLA_URL ??
-  (Platform.OS === 'web' ? '/api/valhalla' : 'http://127.0.0.1:8002');
 const GENERATED_LOOP_RADIUS_M = 150;
 
 class RoutingError extends Error {

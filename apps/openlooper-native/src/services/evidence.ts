@@ -1,10 +1,5 @@
-import { Platform } from 'react-native';
-
 import type { RouteEdge, RouteResult, RouteUseEvidence } from '../../../../src/domain/models';
-
-const BASE =
-  process.env.EXPO_PUBLIC_EVIDENCE_URL ??
-  (Platform.OS === 'web' ? '/api/evidence' : 'http://127.0.0.1:8003');
+import { EVIDENCE_URL as BASE } from './endpoints';
 
 function edgeRequest(route: RouteResult, edge: RouteEdge) {
   return {
