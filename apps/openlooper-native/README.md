@@ -1,6 +1,6 @@
 # OpenLooper Expo client
 
-This is the in-progress universal React Native translation of the OpenLooper frontend. It uses Expo SDK 57 and Expo Router, with one planner screen shared by Android, iOS, and web.
+This is the universal Expo SDK 57 frontend for OpenLooper. Android and iOS use `react-native-maps`; web uses MapLibre and OpenFreeMap. Routing, analysis, and loop-scoring logic is shared with the original web prototype.
 
 ## Run it
 
@@ -12,79 +12,19 @@ npm run native:web
 npm run native:check
 ```
 
-Or run `npm run android`, `npm run ios`, or `npm run web` from this directory. Native device testing uses Expo Go. The web target uses Leaflet with OpenStreetMap raster tiles; native targets use `react-native-maps`.
+Or run `npm run android`, `npm run ios`, or `npm run web` from this directory.
 
-## Migrated in the first slice
+The app supports A→B alternatives, waypoint sketching, automatic loop generation, route preferences, draggable editing, local session restoration, location search, device location, elevation, route-quality notes and segment details, route-use evidence ranking, and GPX export/sharing. Development builds also expose loop-scoring sliders. The development evidence map overlay from the original frontend is intentionally not included.
 
-- Responsive map-and-planner layout for phone and laptop widths.
-- Run, Walk, and Cycle selection.
-- A→B, Loop, and Sketch creation modes.
-- Start, destination, via-point, loop-start, and explicit sketch-completion state.
-- Native and web map adapters with waypoint markers and a provisional route line.
-- Target-distance, location-search, clear, and route-action UI boundaries.
+## Local services
 
-## Next slices
+The web build defaults to `/api/valhalla` and `/api/evidence`. Native builds default to ports `8002` and `8003` on `127.0.0.1`, which works for an iOS simulator but not a physical phone. Set these variables to a development machine address reachable from the device:
 
-1. Move the Valhalla request/response mapper into a platform-neutral package and connect A→B routing.
-2. Port loop generation, scoring, evidence attribution, and alternatives.
-3. Add draggable markers, persistence, elevation, route notes, and GPX sharing.
-4. Replace the temporary Expo artwork with production OpenLooper icons and configure store map keys.
-
-For a phone to reach local services, set `EXPO_PUBLIC_VALHALLA_URL` and `EXPO_PUBLIC_EVIDENCE_URL` to the development machine's LAN address. `localhost` on a physical phone refers to the phone itself.
-
-<!-- The remaining create-expo-app guide is retained temporarily for SDK setup reference. -->
-
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
-
-## Get started
-
-1. Install dependencies
-
-   ```bash
-   npm install
-   ```
-
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
-```bash
-npm run reset-project
+```sh
+EXPO_PUBLIC_VALHALLA_URL=http://192.168.1.10:8002
+EXPO_PUBLIC_EVIDENCE_URL=http://192.168.1.10:8003
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+`EXPO_PUBLIC_NOMINATIM_URL` can optionally replace the default OpenStreetMap Nominatim endpoint.
 
-### Other setup steps
-
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
-
-## Learn more
-
-To learn more about developing your project with Expo, look at the following resources:
-
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
-
-## Join the community
-
-Join our community of developers creating universal apps.
-
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+Start the local route and evidence services from the repository root using the documented `routing:*` and `evidence:*` scripts.

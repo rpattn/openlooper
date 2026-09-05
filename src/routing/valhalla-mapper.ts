@@ -1,5 +1,6 @@
 import { elevationProfile } from "../domain/elevation";
 import { routeBounds } from "../domain/geometry";
+import { randomId } from "../domain/id";
 import type { Coordinate, RouteLeg, RouteResult } from "../domain/models";
 import type { ValhallaTrip } from "./valhalla-types";
 
@@ -58,7 +59,7 @@ export function encodePolyline(points: Coordinate[], precision = 6): string {
 
 export function mapTrip(
   trip: ValhallaTrip,
-  id = crypto.randomUUID(),
+  id = randomId(),
 ): RouteResult {
   const rawLegs = trip.legs ?? [];
   const geometry: Coordinate[] = [];

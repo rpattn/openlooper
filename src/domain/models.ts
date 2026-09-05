@@ -1,3 +1,5 @@
+import { randomId } from "./id";
+
 export type Coordinate = { lat: number; lon: number };
 export type Activity = "run" | "walk" | "cycle";
 export type CreationMode = "pointToPoint" | "loop" | "sketch";
@@ -168,5 +170,5 @@ export const DEFAULT_CAMERA: MapCamera = {
 };
 
 export function waypoint(coordinate: Coordinate, role: WaypointRole): Waypoint {
-  return { id: crypto.randomUUID(), coordinate, role };
+  return { id: randomId(), coordinate, role };
 }

@@ -5,6 +5,7 @@ import type {
   RouteIssue,
   RouteResult,
 } from "./models";
+import { randomId } from "./id";
 
 function stringValue(
   edge: Record<string, unknown>,
@@ -210,7 +211,7 @@ function addIssue(
   }
   issues.push({
     ...finding,
-    id: crypto.randomUUID(),
+    id: randomId(),
     beginIndex: edge.beginIndex,
     endIndex: edge.endIndex,
     lengthKm: edge.lengthKm,

@@ -1,9 +1,10 @@
 import { destination } from "./geometry";
+import { randomId } from "./id";
 import type { Coordinate, Waypoint, WaypointRole } from "./models";
 
 export type LoopSeed = { id: string; waypoints: Waypoint[] };
 const point = (coordinate: Coordinate, role: WaypointRole): Waypoint => ({
-  id: crypto.randomUUID(),
+  id: randomId(),
   coordinate,
   role,
 });
