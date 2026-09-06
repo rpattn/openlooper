@@ -137,6 +137,7 @@ export async function traceRoute(
             "edge.lane_count",
             "edge.cycle_lane",
             "edge.bicycle_network",
+            "edge.speed",
             "edge.shoulder",
             "edge.sidewalk",
             "edge.way_id",

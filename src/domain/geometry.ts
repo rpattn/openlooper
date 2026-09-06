@@ -91,3 +91,13 @@ export function closestSegment(
   }
   return best;
 }
+export function bearing(from: Coordinate, to: Coordinate): number {
+  const lat1 = rad(from.lat);
+  const lat2 = rad(to.lat);
+  const dLon = rad(to.lon - from.lon);
+  const y = Math.sin(dLon) * Math.cos(lat2);
+  const x =
+    Math.cos(lat1) * Math.sin(lat2) -
+    Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+  return (deg(Math.atan2(y, x)) + 360) % 360;
+}

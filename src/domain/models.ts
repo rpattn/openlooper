@@ -64,6 +64,8 @@ export type EdgeAttributes = {
   bicycleNetwork?: number;
   maxUpwardGrade?: number;
   maxDownwardGrade?: number;
+  /** Valhalla's predicted travel speed for the edge, in km/h. */
+  speedKph?: number;
   wayId?: number;
 };
 export type IssueCategory =
@@ -134,6 +136,19 @@ export type RouteAlternative = {
   waypoints?: Waypoint[];
 };
 export type MapCamera = { center: Coordinate; zoom: number };
+/** Base map rendering. These map onto MapKit's map types on iOS and onto the
+ * nearest vector or raster style on the web map. */
+export type MapStyleId = "standard" | "muted" | "satellite" | "hybrid";
+/** What the route line is coloured by while inspecting it. */
+export type RouteOverlay =
+  | "route"
+  | "gradient"
+  | "surface"
+  | "roads"
+  | "usage"
+  | "speed";
+/** `edit` lets map taps change the route; `inspect` only reads it. */
+export type InteractionMode = "edit" | "inspect";
 export type ViewportEvidenceState = {
   loading: boolean;
   error?: string;
@@ -142,6 +157,9 @@ export type ViewportEvidenceState = {
 export type SheetState = "collapsed" | "half" | "full";
 export type PlannerState = {
   camera: MapCamera;
+  mapStyle: MapStyleId;
+  overlay: RouteOverlay;
+  interaction: InteractionMode;
   plan: RoutePlan;
   selectedRoute?: RouteResult;
   alternatives: RouteAlternative[];
@@ -155,6 +173,10 @@ export type PlannerState = {
   sheet: SheetState;
   loopSeed: number;
   sketchCompleted: boolean;
+  /** Set once the planner edits a generated loop by hand. From then on the loop
+   * is rerouted through its current points rather than generated afresh, so a
+   * preference change cannot throw away the shape being tuned. */
+  loopTuned: boolean;
 };
 
 export const DEFAULT_PREFERENCES: RoutingPreferences = {
@@ -164,6 +186,8 @@ export const DEFAULT_PREFERENCES: RoutingPreferences = {
   roadComfort: 0.75,
   pavedPreference: true,
 };
+export const DEFAULT_MAP_STYLE: MapStyleId = "standard";
+export const DEFAULT_OVERLAY: RouteOverlay = "route";
 export const DEFAULT_CAMERA: MapCamera = {
   center: { lat: 52.8067, lon: -1.6432 },
   zoom: 12.5,

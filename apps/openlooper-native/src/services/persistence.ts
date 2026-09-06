@@ -33,6 +33,15 @@ export async function restorePlanner(): Promise<PlannerState | undefined> {
 export async function persistPlanner(state: PlannerState): Promise<void> {
   const clean = {
     ...state,
+    // Evidence segment geometry is only needed while the route is on screen and
+    // is large enough to blow the storage quota on its own.
+    selectedRoute: state.selectedRoute && {
+      ...state.selectedRoute,
+      useEvidence: state.selectedRoute.useEvidence && {
+        ...state.selectedRoute.useEvidence,
+        segments: undefined,
+      },
+    },
     loading: false,
     progress: undefined,
     error: undefined,

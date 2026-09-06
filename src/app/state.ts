@@ -2,7 +2,10 @@ import type {
   Activity,
   Coordinate,
   CreationMode,
+  InteractionMode,
+  MapStyleId,
   PlannerState,
+  RouteOverlay,
   RouteAlternative,
   RoutePlan,
   RouteResult,
@@ -10,10 +13,18 @@ import type {
   SheetState,
   Waypoint,
 } from "../domain/models";
-import { DEFAULT_CAMERA, DEFAULT_PREFERENCES } from "../domain/models";
+import {
+  DEFAULT_CAMERA,
+  DEFAULT_MAP_STYLE,
+  DEFAULT_OVERLAY,
+  DEFAULT_PREFERENCES,
+} from "../domain/models";
 
 export const initialState: PlannerState = {
   camera: DEFAULT_CAMERA,
+  mapStyle: DEFAULT_MAP_STYLE,
+  overlay: DEFAULT_OVERLAY,
+  interaction: "edit",
   plan: {
     mode: "pointToPoint",
     activity: "run",
@@ -26,11 +37,16 @@ export const initialState: PlannerState = {
   sheet: "half",
   loopSeed: 0,
   sketchCompleted: false,
+  loopTuned: false,
 };
 
 export type Action =
   | { type: "restore"; state: PlannerState }
   | { type: "camera"; center: Coordinate; zoom: number }
+  | { type: "mapStyle"; style: MapStyleId }
+  | { type: "overlay"; overlay: RouteOverlay }
+  | { type: "interaction"; interaction: InteractionMode }
+  | { type: "loopTuned"; tuned: boolean }
   | { type: "mode"; mode: CreationMode }
   | { type: "activity"; activity: Activity }
   | { type: "preferences"; preferences: RoutingPreferences }
@@ -65,6 +81,19 @@ export function reducer(state: PlannerState, action: Action): PlannerState {
       return action.state;
     case "camera":
       return { ...state, camera: { center: action.center, zoom: action.zoom } };
+    case "mapStyle":
+      return { ...state, mapStyle: action.style };
+    case "overlay":
+      return { ...state, overlay: action.overlay };
+    case "interaction":
+      return {
+        ...state,
+        interaction: action.interaction,
+        highlightedIssueId: undefined,
+        highlightedEdgeIndex: undefined,
+      };
+    case "loopTuned":
+      return { ...state, loopTuned: action.tuned };
     case "mode":
       return {
         ...state,
@@ -76,6 +105,7 @@ export function reducer(state: PlannerState, action: Action): PlannerState {
         highlightedIssueId: undefined,
         highlightedEdgeIndex: undefined,
         sketchCompleted: false,
+        loopTuned: false,
       };
     case "activity":
       return {
@@ -203,6 +233,7 @@ export function reducer(state: PlannerState, action: Action): PlannerState {
         highlightedIssueId: undefined,
         highlightedEdgeIndex: undefined,
         sketchCompleted: false,
+        loopTuned: false,
       };
   }
 }

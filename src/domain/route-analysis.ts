@@ -59,6 +59,7 @@ export function mapEdges(
         bicycleNetwork: numberValue(edge, "bicycle_network"),
         maxUpwardGrade: numberValue(edge, "max_upward_grade"),
         maxDownwardGrade: numberValue(edge, "max_downward_grade"),
+        speedKph: numberValue(edge, "speed"),
         wayId: numberValue(edge, "way_id"),
       },
     }))
