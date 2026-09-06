@@ -66,6 +66,10 @@ function loopLabel(result: RouteResult, metrics: NonNullable<RouteAlternative['m
   ].join(' · ');
 }
 
+/** Where locating puts the camera: close enough to place a start on the right
+ * street, wide enough to still see which part of town it is. */
+export const LOCATE_ZOOM = 14;
+
 async function attributeGeometry(result: RouteResult, plan: RoutePlan, signal?: AbortSignal) {
   const trace = await traceRoute(result, plan.activity, signal);
   const edges = mapEdges(trace.edges ?? [], result.geometry.length);
@@ -404,6 +408,17 @@ export function usePlanner() {
     discardRoute();
   }, [discardRoute, routeLoop, setWaypoints]);
 
+  /** Removes one point, from the popup its marker opens. */
+  const removeWaypoint = useCallback((id: string) => {
+    const current = currentState.current;
+    const points = editableWaypoints(current);
+    const index = points.findIndex((point) => point.id === id);
+    // A loop's start doubles as its finish, and two points are the fewest a
+    // route can be described by.
+    if (index <= 0 || points.length <= 2) return;
+    editWaypoints(points.filter((_, position) => position !== index));
+  }, [editWaypoints]);
+
   const cancel = useCallback(() => {
     controller.current?.abort();
     requestId.current++;
@@ -432,7 +447,7 @@ export function usePlanner() {
       // steps back to half and the camera is centred for that.
       const sheet = currentState.current.sheet === 'full' ? 'half' : currentState.current.sheet;
       if (sheet !== currentState.current.sheet) dispatch({ type: 'sheet', sheet });
-      dispatch({ type: 'camera', center: coordinate, zoom: 15 });
+      dispatch({ type: 'camera', center: coordinate, zoom: LOCATE_ZOOM });
       startAt(coordinate);
     } catch (error) {
       dispatch({ type: 'routeError', error: `Your location is unavailable (${(error as Error).message}). Choose a start on the map instead.` });
@@ -523,6 +538,7 @@ export function usePlanner() {
     moveWaypoint,
     startAt,
     editWaypoints,
+    removeWaypoint,
     setWaypoints,
     selectAlternative,
     generate,

@@ -6,7 +6,6 @@ import { IconButton } from './ui/icon-button';
 
 export type RouteBarProps = {
   top: number;
-  accent: string;
   /** Name of the saved route being edited, if this route came from the library. */
   name?: string;
   canSave: boolean;
@@ -19,7 +18,7 @@ export type RouteBarProps = {
  * The map screen's only chrome at the top: leave the route, or save it and
  * leave. Everything else about the route lives in the sheet below.
  */
-export function RouteBar({ top, accent, name, canSave, saving, onBack, onSave }: RouteBarProps) {
+export function RouteBar({ top, name, canSave, saving, onBack, onSave }: RouteBarProps) {
   return (
     <View style={[styles.bar, { top }]} pointerEvents="box-none">
       <IconButton
@@ -32,18 +31,19 @@ export function RouteBar({ top, accent, name, canSave, saving, onBack, onSave }:
       />
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel="Save this route and go back"
+        accessibilityLabel={canSave ? 'Save this route and go back' : 'Nothing to save'}
         accessibilityState={{ disabled: !canSave || saving }}
         disabled={!canSave || saving}
         onPress={onSave}
         style={({ pressed }) => [
           SHADOW.floating,
           styles.save,
-          // A solid accent reads over any base map, and unlike a tinted glass
-          // surface it keeps its contrast where liquid glass is unavailable.
-          { backgroundColor: accent },
+          // Solid rather than tinted glass, so it keeps its contrast over any
+          // base map and wherever liquid glass is unavailable. Green means there
+          // is something to write; grey means the route is already saved — and
+          // grey stays fully opaque so it reads as a state, not a faded button.
+          { backgroundColor: canSave ? COLOR.ready : COLOR.idle },
           pressed && styles.pressed,
-          (!canSave || saving) && styles.disabled,
         ]}
       >
         <Text style={styles.saveText}>{saving ? 'Saving…' : 'Save'}</Text>
@@ -85,5 +85,4 @@ const styles = StyleSheet.create({
   },
   nameText: { color: COLOR.ink, fontSize: 12, fontWeight: '800' },
   pressed: { opacity: 0.75, transform: [{ scale: 0.97 }] },
-  disabled: { opacity: 0.4 },
 });

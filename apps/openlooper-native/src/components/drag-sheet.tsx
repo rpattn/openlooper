@@ -13,10 +13,12 @@ import Animated, {
 import { COLOR, RADIUS, SHADOW } from '@/theme';
 import type { SheetState } from '@/domain/models';
 import { COLLAPSED_FALLBACK, SHEET_FRACTION } from './sheet-detents';
-import { GlassSurface } from './ui/glass-surface';
 
 const SPRING = { damping: 26, stiffness: 240, mass: 0.9 } as const;
 const HANDLE_BLOCK = 26;
+/** How far the sheet may be pulled below its collapsed height before letting go
+ * closes the route instead of snapping back. */
+const DISMISS_PULL = 58;
 
 export type DragSheetProps = {
   snap: SheetState;
@@ -26,13 +28,15 @@ export type DragSheetProps = {
   bottomInset: number;
   /** Always-visible summary rendered directly under the drag handle. */
   peek: ReactNode;
+  /** Dragging the collapsed sheet further down leaves the route entirely. */
+  onDismiss: () => void;
   children: ReactNode;
 };
 
 /**
- * Bottom sheet the planner can drag by its handle between three snap points.
- * The More/Less buttons drive the same `snap` prop, so both ways of resizing
- * stay in sync.
+ * Bottom sheet the planner drags by its handle between three snap points.
+ * Tapping the handle steps through them, and pulling the collapsed sheet down
+ * past its stop leaves the route.
  */
 export function DragSheet({
   snap,
@@ -40,6 +44,7 @@ export function DragSheet({
   height,
   bottomInset,
   peek,
+  onDismiss,
   children,
 }: DragSheetProps) {
   const { height: windowHeight } = useWindowDimensions();
@@ -82,6 +87,12 @@ export function DragSheet({
     [onSnap, snap],
   );
 
+  /** Tapping the handle steps through the detents, which replaces the pair of
+   * More/Less buttons the peek used to carry. */
+  const cycle = useCallback(() => {
+    onSnap(snap === 'collapsed' ? 'half' : snap === 'half' ? 'full' : 'collapsed');
+  }, [onSnap, snap]);
+
   const pan = useMemo(
     () =>
       Gesture.Pan()
@@ -91,9 +102,20 @@ export function DragSheet({
           runOnJS(dismissKeyboard)();
         })
         .onUpdate((event) => {
-          height.value = clamp(started.value - event.translationY, points.collapsed, points.full);
+          const next = started.value - event.translationY;
+          // Below the collapsed detent the sheet gives, rather than stopping
+          // dead, so a pull that is about to close the route looks like one.
+          height.value = next < points.collapsed
+            ? points.collapsed - Math.min(DISMISS_PULL, (points.collapsed - next) * 0.5)
+            : clamp(next, points.collapsed, points.full);
         })
         .onEnd((event) => {
+          const pulled = points.collapsed - height.value;
+          if (pulled > 24 || (pulled > 2 && event.velocityY > 1400)) {
+            height.value = withSpring(points.collapsed, SPRING);
+            runOnJS(onDismiss)();
+            return;
+          }
           // Project where a flick would land so a fast swipe skips a snap point.
           const projected = height.value - event.velocityY * 0.12;
           const entries: [SheetState, number][] = [
@@ -107,7 +129,7 @@ export function DragSheet({
           height.value = withSpring(best[1], SPRING);
           runOnJS(commit)(best[0]);
         }),
-    [commit, dismissKeyboard, height, points, started],
+    [commit, dismissKeyboard, height, onDismiss, points, started],
   );
 
   const sheetStyle = useAnimatedStyle(() => ({ height: height.value }));
@@ -117,17 +139,31 @@ export function DragSheet({
     if (Math.abs(measured - peekHeight) > 1) setPeekHeight(measured);
   }
 
+  const tap = useMemo(
+    () =>
+      Gesture.Tap().onEnd(() => {
+        // Otherwise the keyboard is left hanging over wherever the sheet went.
+        runOnJS(dismissKeyboard)();
+        runOnJS(cycle)();
+      }),
+    [cycle, dismissKeyboard],
+  );
+  const grab = useMemo(() => Gesture.Exclusive(pan, tap), [pan, tap]);
+
   return (
     <Animated.View style={[styles.sheet, SHADOW.sheet, sheetStyle]}>
-      <GlassSurface variant="regular" style={styles.surface}>
-        <GestureDetector gesture={pan}>
-          <View style={styles.grabber}>
+      {/* The sheet is the content layer, not a floating control, so it takes an
+          opaque surface rather than glass: glass belongs to the controls above
+          the map, and clear glass here left the text sitting on the map. */}
+      <View style={styles.surface}>
+        <GestureDetector gesture={grab}>
+          <View style={styles.grabber} accessibilityRole="button" accessibilityLabel="Resize the route panel">
             <View style={styles.handle} />
             <View onLayout={measurePeek}>{peek}</View>
           </View>
         </GestureDetector>
         <View style={styles.body}>{children}</View>
-      </GlassSurface>
+      </View>
     </Animated.View>
   );
 }
@@ -144,6 +180,7 @@ const styles = StyleSheet.create({
   surface: {
     flex: 1,
     overflow: 'hidden',
+    backgroundColor: COLOR.surface,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: COLOR.line,
     borderTopLeftRadius: RADIUS.sheet,

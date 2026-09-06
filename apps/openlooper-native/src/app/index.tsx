@@ -218,8 +218,6 @@ export default function PlannerScreen() {
     }
   }
 
-  const dirty = signature(state.plan, state.selectedRoute?.id) !== baseline;
-
   function requestBack() {
     if (dirty && (state.selectedRoute || state.plan.waypoints.length)) {
       setDialog('discard');
@@ -234,6 +232,8 @@ export default function PlannerScreen() {
     setDraft(false);
     leavePlanner();
   }
+
+  const dirty = signature(state.plan, state.selectedRoute?.id) !== baseline;
 
   const highlightedIssue = state.selectedRoute?.issues.find(
     (issue) => issue.id === state.highlightedIssueId,
@@ -275,6 +275,8 @@ export default function PlannerScreen() {
         mapStyle={state.mapStyle}
         bottomInset={view === 'planner' ? bottomInset : 0}
         waypoints={state.plan.waypoints}
+        mode={state.plan.mode}
+        active={view === 'planner'}
         route={state.selectedRoute}
         fitRequest={planner.fitRequest}
         alternatives={state.alternatives}
@@ -282,6 +284,7 @@ export default function PlannerScreen() {
         profilePoint={state.profilePoint}
         onMapPress={planner.mapPress}
         onWaypointPress={planner.waypointPress}
+        onWaypointDelete={planner.removeWaypoint}
         onWaypointMove={planner.moveWaypoint}
         onIssuePress={(id) => dispatch({ type: 'highlightIssue', id })}
         onEdgePress={(index) => dispatch({ type: 'highlightEdge', index })}
@@ -300,9 +303,8 @@ export default function PlannerScreen() {
       >
         <RouteBar
           top={insets.top + 8}
-          accent={ACTIVITY[state.plan.activity].color}
           name={editing?.name}
-          canSave={Boolean(state.selectedRoute)}
+          canSave={Boolean(state.selectedRoute) && dirty}
           saving={saving}
           onBack={requestBack}
           onSave={beginSave}
@@ -314,6 +316,7 @@ export default function PlannerScreen() {
           gap={14}
           fadeAt={windowHeight * SHEET_FRACTION.full}
           overlay={state.overlay}
+          legend={overlay.legend}
           onOverlay={(value) => dispatch({ type: 'overlay', overlay: value })}
           locating={planner.locating}
           hasRoute={Boolean(state.selectedRoute)}
@@ -350,6 +353,8 @@ export default function PlannerScreen() {
           onEdgeDismiss={() => dispatch({ type: 'highlightEdge' })}
           onProfile={(coordinate) => dispatch({ type: 'profilePoint', coordinate })}
           onSheet={(sheet) => dispatch({ type: 'sheet', sheet })}
+          onOverlay={(value) => dispatch({ type: 'overlay', overlay: value })}
+          onDismiss={requestBack}
           series={series}
           spans={spans}
           legend={overlay.legend}

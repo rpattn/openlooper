@@ -17,6 +17,10 @@ export const COLOR = {
   warning: '#d77b16',
   danger: '#b3261e',
   highlight: '#ffd24a',
+  /** Save is live and has something to write. */
+  ready: '#177657',
+  /** Save has nothing to write; still legible rather than faded out. */
+  idle: '#8a938b',
 } as const;
 
 export const GLASS = Platform.OS === 'ios';

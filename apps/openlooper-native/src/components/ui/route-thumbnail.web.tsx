@@ -3,23 +3,20 @@ import { StyleSheet, View } from 'react-native';
 
 import { COLOR, RADIUS } from '@/theme';
 import type { Coordinate } from '@/domain/models';
-
-export type RouteThumbnailProps = {
-  /** The route line, already sampled down to a card's worth of points. */
-  outline: Coordinate[];
-  accent: string;
-  size?: number;
-};
+import type { RouteThumbnailProps } from './route-thumbnail.types';
 
 const STROKE = 2.5;
 const PADDING = 9;
 
 /**
- * Card-sized picture of a route line. Each segment is a rotated bar, which
- * draws the shape with plain views rather than pulling in an SVG renderer —
- * the same trade the profile chart makes.
+ * Card-sized picture of a route line, for the web build. Each segment is a
+ * rotated bar, which draws the shape with plain views rather than pulling in an
+ * SVG renderer — the same trade the profile chart makes.
+ *
+ * The native card shows a real map instead. A MapLibre instance per card would
+ * mean a WebGL context per card, and browsers cap how many a page may hold.
  */
-export function RouteThumbnail({ outline, accent, size = 96 }: RouteThumbnailProps) {
+export function RouteThumbnail({ outline, accent, size = 92 }: RouteThumbnailProps) {
   const segments = useMemo(() => project(outline, size), [outline, size]);
   return (
     <View style={[styles.tile, { width: size, height: size }]}>

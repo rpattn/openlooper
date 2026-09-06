@@ -22,7 +22,17 @@ There is one screen and one map. The home page is drawn over the live map, and s
 
 **Home** chooses the activity, route type and — for a loop — the target distance, then creates the route. Below that is a paginated list of the routes saved on this device, each card drawing the route's own shape beside its distance, time and approximate ascent. **View** opens a route for inspection; **Edit** opens it with the point tools live.
 
-**The map** carries the route and nothing else: back and save sit top left, and the sheet below holds the points, preferences, profile and notes. Activity and route type are settled on the home page and are not repeated there.
+**The map** carries the route and nothing else: back and save sit top left, and the sheet below holds the points, preferences, profile and notes. Activity and route type are settled on the home page and are not repeated there. Save is green while there is something to write and grey once the route matches what is saved. Drag the sheet's handle to resize it, tap the handle to step through its sizes, or pull the collapsed sheet down to leave the route. Tapping a point on the map names it and offers to remove it. Colouring the route by anything other than the plain line puts a key beside the colour control, where the map is what is being read, and the same switch sits beside the profile chart so one route can be read several ways without leaving the sheet.
+
+## Surfaces
+
+Apple's guidance is that Liquid Glass belongs to the controls floating above content, never to the content itself, and that glass over busy content has to be tinted to stay legible. So:
+
+- **Floating controls** — the map buttons, the back and save controls, the colour key — are glass over a light veil. Left to itself the material takes its opacity from whatever it samples, so the same button read as a solid disc over a park and as nothing at all over a street; the veil sets a floor and the glass still supplies the depth.
+- **The route sheet and the home page** are the content layer and take opaque surfaces. An untinted glass sheet left the map showing straight through the text under it.
+- **Forms inside the sheet** — search, the point list, preferences — are grouped fills on that surface rather than more glass, because glass is not nested inside glass.
+- **The point popup is drawn over the map, not as a MapKit callout.** A callout is presented outside its marker's bounds while the tap handler that would reach anything inside it hangs off the marker, so a button in there never receives the touch — and a callout has no intrinsic width, so one left to size itself collapses into a column of single letters. Placing it over the map keeps both the layout and the touch targets ours; it is anchored by projecting the coordinate against the current region, and dropped as soon as the map is panned.
+- **Tint carries meaning**: the accent is spent on the primary action and on whichever control is switched on, and those are painted solid rather than tinted, so a white symbol keeps its contrast wherever the button lands.
 
 ## Saved routes
 
@@ -33,6 +43,7 @@ A saved route keeps its plan, its line, its elevation and its numbers. Segment a
 Storage differs by platform, and deliberately:
 
 - **Device.** `expo-sqlite`, in `openlooper-routes.db`. The columns are what the list draws, and the route payload sits beside them in a blob, so a page of cards is one small query.
+- Cards draw the route on a real map on a device, from a still image rather than a live map. The map is drawn larger than the card and clipped, because MapKit puts its legal link in a corner of whatever view it is handed and a card is far too small to carry it legibly; Apple's attribution stays on the full map screen, where it can be read. The web build draws the line on its own instead: a MapLibre map per card would mean a WebGL context per card, and browsers cap how many a page may hold.
 - **Web.** The browser's own storage, in the same shape: one index of card data, one entry per route. `expo-sqlite`'s web build reaches its worker through a `SharedArrayBuffer`, which needs the page cross-origin isolated; the COEP header that takes would also block the map tiles, glyphs and MapLibre worker the web map loads from other origins.
 
 Nothing is uploaded. Routes live only on the device that saved them, and clearing the app's data clears them.

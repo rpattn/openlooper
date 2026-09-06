@@ -1,7 +1,6 @@
 import Slider from '@react-native-community/slider';
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import {
-  Keyboard,
   Linking,
   Pressable,
   ScrollView,
@@ -16,6 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { SharedValue } from 'react-native-reanimated';
 
 import { DEFAULT_LOOP_SCORING_WEIGHTS } from '../../../../src/domain/route-scoring';
+import { OVERLAY_LABEL } from '../../../../src/domain/route-overlays';
 import type { ColourSpan, LegendEntry } from '../../../../src/domain/route-overlays';
 import type { RouteSeries } from '../../../../src/domain/route-series';
 import { COLOR, RADIUS, SHADOW } from '@/theme';
@@ -27,15 +27,15 @@ import type {
   PlannerState,
   RouteIssue,
   RouteEdge,
+  RouteOverlay,
   RoutingPreferences,
   Waypoint,
 } from '@/domain/models';
-import { editableWaypoints } from '@/domain/waypoints';
+import { editableWaypoints, waypointLabel } from '@/domain/waypoints';
 import { DragSheet } from './drag-sheet';
 import { PrimaryButton, SmallButton } from './ui/buttons';
 import { Collapsible } from './ui/collapsible';
 import { DistanceField } from './ui/distance-field';
-import { GlassSurface } from './ui/glass-surface';
 import { ProfileChart } from './ui/profile-chart';
 import { Segmented } from './ui/segmented';
 import { WaypointList } from './ui/waypoint-list';
@@ -63,6 +63,10 @@ type Props = {
   onEdgeDismiss: () => void;
   onProfile: (coordinate?: Coordinate) => void;
   onSheet: (sheet: PlannerState['sheet']) => void;
+  /** Switches what the route is coloured by, and so what the chart plots. */
+  onOverlay: (overlay: RouteOverlay) => void;
+  /** Pulling the collapsed sheet down leaves the route. */
+  onDismiss: () => void;
   onSearchSelect: (coordinate: Coordinate) => void;
   /** Centres the map on a point picked from the list. */
   onFocusPoint: (coordinate: Coordinate) => void;
@@ -86,6 +90,7 @@ const POINT_TOOLS = [
   { value: 'destination', label: 'Finish' },
   { value: 'add', label: 'Add point' },
 ] as const;
+const OVERLAYS: RouteOverlay[] = ['route', 'gradient', 'surface', 'roads', 'usage', 'speed'];
 let lastSearch = 0;
 
 export function PlannerSheet(props: Props) {
@@ -100,12 +105,6 @@ export function PlannerSheet(props: Props) {
   const desktop = width >= 800;
   const editing = state.interaction === 'edit';
   const accent = ACTIVITY[state.plan.activity].color;
-
-  // Dragging the sheet with the keyboard up otherwise leaves it stranded over
-  // whatever the sheet slid to.
-  useEffect(() => {
-    Keyboard.dismiss();
-  }, [state.sheet]);
 
   function search() {
     const value = query.trim();
@@ -140,20 +139,15 @@ export function PlannerSheet(props: Props) {
     }, Math.max(0, 1000 - (Date.now() - lastSearch)));
   }
 
-  const peek = (
-    <Peek
-      state={state}
-      accent={accent}
-      onLess={() => props.onSheet(state.sheet === 'full' ? 'half' : 'collapsed')}
-      onMore={() => props.onSheet(state.sheet === 'collapsed' ? 'half' : 'full')}
-    />
-  );
+  const peek = <Peek state={state} accent={accent} />;
 
   const body = (
     <ScrollView
       contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 28 }]}
       keyboardShouldPersistTaps="handled"
       keyboardDismissMode="on-drag"
+      // Keeps whatever is being typed into clear of the keyboard.
+      automaticallyAdjustKeyboardInsets
       showsVerticalScrollIndicator={false}
     >
       <View style={styles.searchRow}>
@@ -161,6 +155,9 @@ export function PlannerSheet(props: Props) {
           value={query}
           onChangeText={setQuery}
           onSubmitEditing={search}
+          // At any smaller detent the keyboard covers the whole sheet, this
+          // field included, so typing starts by opening the sheet fully.
+          onFocus={() => props.onSheet('full')}
           placeholder="Find a place"
           placeholderTextColor={COLOR.faint}
           returnKeyType="search"
@@ -302,11 +299,42 @@ export function PlannerSheet(props: Props) {
                 }
               />
             )}
-            <PrimaryButton accent={accent} label="Export GPX" onPress={props.onExport} />
+            <View style={styles.summaryAction}>
+              <PrimaryButton accent={accent} label="Export GPX" onPress={props.onExport} />
+            </View>
           </View>
 
           <View style={styles.panel}>
             <Text style={styles.sectionTitle}>{props.series.label} over distance</Text>
+            {/* The same switch as the map's colour control, kept beside the chart
+                so several readings of one route can be flicked through here. */}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.overlayRow}
+            >
+              {OVERLAYS.map((value) => (
+                <Pressable
+                  key={value}
+                  accessibilityRole="radio"
+                  accessibilityState={{ checked: state.overlay === value }}
+                  onPress={() => props.onOverlay(value)}
+                  style={[
+                    styles.overlayPill,
+                    state.overlay === value && { backgroundColor: accent, borderColor: accent },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.overlayPillText,
+                      state.overlay === value && styles.overlayPillTextActive,
+                    ]}
+                  >
+                    {OVERLAY_LABEL[value]}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
             {props.series.points.length ? (
               <ProfileChart
                 series={props.series}
@@ -374,10 +402,10 @@ export function PlannerSheet(props: Props) {
 
   if (desktop) {
     return (
-      <GlassSurface variant="regular" style={[styles.desktop, SHADOW.sheet]}>
+      <View style={[styles.desktop, SHADOW.sheet]}>
         <View style={styles.desktopHeader}>{peek}</View>
         {body}
-      </GlassSurface>
+      </View>
     );
   }
 
@@ -388,23 +416,14 @@ export function PlannerSheet(props: Props) {
       height={props.sheetHeight}
       bottomInset={insets.bottom}
       peek={peek}
+      onDismiss={props.onDismiss}
     >
       {body}
     </DragSheet>
   );
 }
 
-function Peek({
-  state,
-  accent,
-  onLess,
-  onMore,
-}: {
-  state: PlannerState;
-  accent: string;
-  onLess: () => void;
-  onMore: () => void;
-}) {
+function Peek({ state, accent }: { state: PlannerState; accent: string }) {
   const route = state.selectedRoute;
   const mode = CREATION_MODES.find((item) => item.value === state.plan.mode)?.label ?? '';
   return (
@@ -420,10 +439,6 @@ function Peek({
               ? 'Calculating route…'
               : 'Place your points on the map'}
         </Text>
-      </View>
-      <View style={styles.peekActions}>
-        <SmallButton label="Less" onPress={onLess} />
-        <SmallButton label="More" onPress={onMore} dark={state.sheet === 'collapsed'} />
       </View>
       {state.sheet !== 'collapsed' && <View style={[styles.accentBar, { backgroundColor: accent }]} />}
     </View>
@@ -442,15 +457,7 @@ function PointsPanel(props: Props & { accent: string }) {
     index,
     role: point.role,
     locked: loop && index === 0,
-    title: loop
-      ? index === 0
-        ? 'Start & finish'
-        : `Loop point ${index}`
-      : point.role === 'start'
-        ? 'Start'
-        : point.role === 'destination'
-          ? 'Finish'
-          : `Via point ${index}`,
+    title: waypointLabel(state.plan.mode, point.role, index),
     subtitle: `${point.coordinate.lat.toFixed(5)}, ${point.coordinate.lon.toFixed(5)}`,
   }));
 
@@ -612,7 +619,7 @@ function ChoiceButton({ label, selected, accent, onPress }: { label: string; sel
 function Toggle({ label, value, onChange }: { label: string; value: boolean; onChange: (value: boolean) => void }) { return <View style={styles.toggleRow}><Text style={styles.label}>{label}</Text><Switch value={value} onValueChange={onChange} /></View>; }
 function PreferenceSlider({ label, value, accent, onChange }: { label: string; value: number; accent: string; onChange: (value: number) => void }) { return <View><View style={styles.sliderHeader}><Text style={styles.label}>{label}</Text><Text style={styles.output}>{value.toFixed(1)}</Text></View><Slider minimumValue={0} maximumValue={1} step={0.1} value={value} minimumTrackTintColor={accent} onSlidingComplete={onChange} accessibilityLabel={label} /></View>; }
 function Notice({ text, error, action, onAction }: { text: string; error?: boolean; action?: string; onAction?: () => void }) { return <View style={[styles.notice, error && styles.noticeError]}><Text style={styles.noticeText}>{text}</Text>{action && onAction && <SmallButton label={action} onPress={onAction} />}</View>; }
-function SummaryItem({ label, value }: { label: string; value: string }) { return <View style={styles.summaryItem}><Text style={styles.muted}>{label}</Text><Text style={styles.summaryValue}>{value}</Text></View>; }
+function SummaryItem({ label, value }: { label: string; value: string }) { return <View style={styles.summaryItem}><Text style={styles.summaryLabel}>{label}</Text><Text style={styles.summaryValue}>{value}</Text></View>; }
 function Issue({ issue, selected, onPress }: { issue: RouteIssue; selected: boolean; onPress: () => void }) { return <Pressable onPress={onPress} style={[styles.issue, selected && styles.issueSelected]}><Text style={styles.issueTitle}>{issue.severity === 'high' ? '▲' : '△'} {issue.title}</Text><Text style={styles.hint}>{issue.explanation} · {issue.lengthKm < 0.1 ? `${Math.round(issue.lengthKm * 1000)} m` : `${issue.lengthKm.toFixed(1)} km`}</Text>{issue.attributes.wayId && <Pressable onPress={() => void Linking.openURL(`https://www.openstreetmap.org/way/${issue.attributes.wayId}`)}><Text style={styles.link}>View recorded OSM way</Text></Pressable>}</Pressable>; }
 
 function EdgeDetails({ edge, onClose }: { edge: RouteEdge; onClose: () => void }) {
@@ -632,25 +639,24 @@ function EdgeDetails({ edge, onClose }: { edge: RouteEdge; onClose: () => void }
 const duration = (seconds: number) => { const minutes = Math.round(seconds / 60); return minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes} min`; };
 
 const styles = StyleSheet.create({
-  desktop: { position: 'absolute', top: 12, bottom: 12, left: 12, width: 410, overflow: 'hidden', borderWidth: 1, borderColor: COLOR.line, borderRadius: 24 },
+  desktop: { position: 'absolute', top: 12, bottom: 12, left: 12, width: 410, overflow: 'hidden', backgroundColor: COLOR.surface, borderWidth: 1, borderColor: COLOR.line, borderRadius: 24 },
   desktopHeader: { paddingTop: 14 },
   content: { paddingHorizontal: 18, paddingTop: 4, gap: 12 },
 
   peek: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 18, paddingBottom: 12 },
   peekGrow: { flex: 1 },
   peekTitle: { color: COLOR.ink, fontSize: 20, fontWeight: '900', letterSpacing: -0.5 },
-  peekActions: { flexDirection: 'row', gap: 5 },
   accentBar: { position: 'absolute', bottom: 0, left: 18, width: 34, height: 3, borderRadius: 2 },
   eyebrow: { color: COLOR.muted, fontSize: 10, fontWeight: '900', letterSpacing: 1.4 },
 
   searchRow: { flexDirection: 'row', gap: 6 },
   searchInput: { flex: 1, minHeight: 44, paddingHorizontal: 12, borderWidth: 1, borderColor: COLOR.line, borderRadius: 11, backgroundColor: COLOR.raised, color: COLOR.ink },
-  searchResult: { padding: 11, borderRadius: 10, backgroundColor: '#eef1eb' },
+  searchResult: { padding: 11, borderRadius: 10, backgroundColor: COLOR.panel, borderWidth: StyleSheet.hairlineWidth, borderColor: COLOR.line },
   searchResultText: { color: COLOR.ink, fontSize: 12 },
 
   buttonRow: { flexDirection: 'row', gap: 6 },
   choice: { flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLOR.line, borderRadius: 11, backgroundColor: COLOR.raised }, choiceText: { color: COLOR.ink, fontSize: 11, fontWeight: '700' },
-  panel: { gap: 9, padding: 12, borderRadius: RADIUS.panel, backgroundColor: COLOR.panel },
+  panel: { gap: 9, padding: 12, borderRadius: RADIUS.panel, backgroundColor: COLOR.panel, borderWidth: StyleSheet.hairlineWidth, borderColor: COLOR.line },
   fieldRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   label: { color: COLOR.ink, fontSize: 13, fontWeight: '700' },
   hint: { color: COLOR.muted, fontSize: 12, lineHeight: 17 },
@@ -661,7 +667,15 @@ const styles = StyleSheet.create({
   sliderHeader: { flexDirection: 'row', justifyContent: 'space-between' }, output: { color: COLOR.muted, fontSize: 12, fontVariant: ['tabular-nums'] },
   notice: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 11, borderRadius: 11, backgroundColor: '#e9efe5' }, noticeError: { backgroundColor: '#f9e3df' }, noticeText: { flex: 1, color: COLOR.ink, fontSize: 12 },
   alternative: { gap: 3, padding: 10, borderWidth: 2, borderColor: 'transparent', borderRadius: 11, backgroundColor: COLOR.raised }, alternativeTitle: { color: COLOR.ink, fontWeight: '900' },
-  summary: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, padding: 12, borderRadius: RADIUS.panel, backgroundColor: COLOR.ink }, summaryItem: { minWidth: '44%' }, summaryValue: { color: '#fff', fontWeight: '900' }, muted: { color: COLOR.faint, fontSize: 11 },
+  // The numbers read as part of the sheet rather than as a black slab dropped
+  // into it; the accent stays on the one action in the group.
+  summary: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, padding: 12, borderRadius: RADIUS.panel, backgroundColor: COLOR.panel, borderWidth: StyleSheet.hairlineWidth, borderColor: COLOR.line },
+  summaryItem: { minWidth: '44%' }, summaryLabel: { color: COLOR.muted, fontSize: 11 }, summaryValue: { color: COLOR.ink, fontSize: 15, fontWeight: '900' }, summaryAction: { width: '100%' },
+  muted: { color: COLOR.faint, fontSize: 11 },
+  overlayRow: { gap: 6, paddingVertical: 1 },
+  overlayPill: { paddingHorizontal: 11, paddingVertical: 7, borderRadius: RADIUS.pill, borderWidth: 1, borderColor: COLOR.line, backgroundColor: COLOR.raised },
+  overlayPillText: { color: COLOR.ink, fontSize: 11, fontWeight: '800' },
+  overlayPillTextActive: { color: '#fff' },
   scoreBreakdown: { color: '#75682e', fontSize: 10, lineHeight: 14 },
   issue: { gap: 3, padding: 10, borderRadius: 10, backgroundColor: COLOR.raised }, issueSelected: { backgroundColor: '#fff3c4' }, issueTitle: { color: COLOR.ink, fontWeight: '800' }, link: { color: '#245fb4', fontSize: 11, fontWeight: '700' },
   detailRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 12 }, detailValue: { flex: 1, color: COLOR.ink, fontSize: 12, textAlign: 'right' },

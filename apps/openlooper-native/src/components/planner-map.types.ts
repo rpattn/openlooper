@@ -1,6 +1,7 @@
 import type { OverlayBand } from '../../../../src/domain/route-overlays';
 import type {
   Coordinate,
+  CreationMode,
   InteractionMode,
   MapCamera,
   MapStyleId,
@@ -23,6 +24,11 @@ export type PlannerMapProps = {
   /** Height of the sheet, so route fitting keeps the route above it. */
   bottomInset: number;
   waypoints: Waypoint[];
+  /** Names the points the same way the sheet's list does. */
+  mode: CreationMode;
+  /** False once the home page has covered the map, so the map stops rendering
+   * chrome — an open marker popup otherwise outlives the screen it belongs to. */
+  active: boolean;
   route?: RouteResult;
   fitRequest: number;
   alternatives: RouteAlternative[];
@@ -30,6 +36,8 @@ export type PlannerMapProps = {
   profilePoint?: Coordinate;
   onMapPress: (coordinate: Coordinate) => void;
   onWaypointPress: (id: string) => void;
+  /** Removes a point from the popup its marker opens. */
+  onWaypointDelete: (id: string) => void;
   onWaypointMove: (id: string, coordinate: Coordinate) => void;
   onIssuePress: (id: string) => void;
   onEdgePress: (index: number) => void;

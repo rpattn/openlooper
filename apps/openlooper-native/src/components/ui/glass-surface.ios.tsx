@@ -8,6 +8,15 @@ import type { GlassSurfaceProps } from './types';
 // falls back for Reduce Transparency, so the opaque card stays the safety net.
 const LIQUID_GLASS = isLiquidGlassAvailable();
 
+/**
+ * A floating control's surface.
+ *
+ * The glass goes over a light veil rather than straight over the map. Left to
+ * itself the material takes its opacity from whatever it happens to be sampling,
+ * so the same control read as a solid disc over a park and as nothing at all
+ * over a street. The veil sets a floor: every control keeps the same weight
+ * wherever it lands, and the glass still supplies the depth and the edge.
+ */
 export function GlassSurface({
   children,
   style,
@@ -26,19 +35,27 @@ export function GlassSurface({
     );
   }
   return (
-    <GlassView
+    <View
       pointerEvents={pointerEvents}
-      glassEffectStyle={variant}
-      tintColor={tint}
-      colorScheme="light"
-      style={style}
+      style={[variant === 'clear' ? styles.veilClear : styles.veil, style]}
     >
+      <GlassView
+        pointerEvents="none"
+        glassEffectStyle={variant}
+        tintColor={tint}
+        colorScheme="light"
+        style={StyleSheet.absoluteFill}
+      />
       {children}
-    </GlassView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   regular: { backgroundColor: 'rgba(250,251,247,0.97)' },
   clear: { backgroundColor: 'rgba(250,251,247,0.82)', borderWidth: 1, borderColor: COLOR.line },
+  // Callers already clip to their own radius, which is what keeps the glass
+  // layer inside the rounded shape.
+  veil: { backgroundColor: 'rgba(250,251,247,0.58)' },
+  veilClear: { backgroundColor: 'rgba(250,251,247,0.24)' },
 });

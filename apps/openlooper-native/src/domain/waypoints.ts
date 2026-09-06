@@ -1,5 +1,5 @@
 import { waypoint } from './models';
-import type { Coordinate, PlannerState, Waypoint } from './models';
+import type { Coordinate, PlannerState, Waypoint, WaypointRole } from './models';
 
 /**
  * Drops a loop's closing point. A loop finishes where it starts, so that point
@@ -32,4 +32,19 @@ export function editableWaypoints(state: PlannerState): Waypoint[] {
  */
 export function loopAnchors(points: Waypoint[]): Coordinate[] {
   return points.filter((point) => point.role === 'via').map((point) => point.coordinate);
+}
+
+/**
+ * What a point is called, wherever it is named. The map's popup and the sheet's
+ * list read from this so a point does not go by two names.
+ */
+export function waypointLabel(
+  mode: PlannerState['plan']['mode'],
+  role: WaypointRole,
+  index: number,
+): string {
+  if (mode === 'loop') return index === 0 ? 'Start & finish' : `Loop point ${index}`;
+  if (role === 'start') return 'Start';
+  if (role === 'destination') return 'Finish';
+  return `Via point ${index}`;
 }

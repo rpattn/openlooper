@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import type * as MapLibre from 'maplibre-gl';
 
+import { waypointLabel } from '@/domain/waypoints';
 import type { Coordinate, MapStyleId, RouteIssue, Waypoint } from '@/domain/models';
 import type { PlannerMapProps } from './planner-map.types';
 
 type MapLibreModule = typeof import('maplibre-gl');
 type Callbacks = Pick<
   PlannerMapProps,
-  'onMapPress' | 'onWaypointPress' | 'onWaypointMove' | 'onIssuePress' | 'onEdgePress' | 'onAlternativePress' | 'onCameraChange'
+  'onMapPress' | 'onWaypointPress' | 'onWaypointDelete' | 'onWaypointMove' | 'onIssuePress' | 'onEdgePress' | 'onAlternativePress' | 'onCameraChange'
 >;
 const WORKER_URL = 'https://unpkg.com/maplibre-gl@6.6.0/dist/maplibre-gl-worker.mjs';
 // OpenFreeMap serves no imagery, so the web map offers vector styles only and
@@ -84,7 +85,7 @@ export function PlannerMap(props: PlannerMapProps) {
           addLayers(instance);
           setReady(true);
           renderData(instance, snapshot.current);
-          renderMarkers(module, instance, markers, snapshot.current.waypoints, callbacks, snapshot.current.interaction === 'edit');
+          renderMarkers(module, instance, markers, snapshot.current.waypoints, snapshot.current.mode, snapshot.current.active, callbacks, snapshot.current.interaction === 'edit');
           instance.on('click', 'issues-hit', (event) => {
             if (snapshot.current.interaction === 'edit' && snapshot.current.activeTool === 'add') return;
             const id = event.features?.[0]?.properties?.id as string | undefined;
@@ -101,7 +102,7 @@ export function PlannerMap(props: PlannerMapProps) {
             if (id) callbacks.current.onAlternativePress(id);
           });
         });
-        renderMarkers(module, instance, markers, snapshot.current.waypoints, callbacks, snapshot.current.interaction === 'edit');
+        renderMarkers(module, instance, markers, snapshot.current.waypoints, snapshot.current.mode, snapshot.current.active, callbacks, snapshot.current.interaction === 'edit');
         observer = new ResizeObserver(() => instance.resize());
         observer.observe(container.current);
       })
@@ -119,7 +120,7 @@ export function PlannerMap(props: PlannerMapProps) {
     if (!instance || !ready) return;
     renderData(instance, props);
     void import('maplibre-gl').then((module) => {
-      if (map.current === instance) renderMarkers(module, instance, markers, props.waypoints, callbacks, props.interaction === 'edit');
+      if (map.current === instance) renderMarkers(module, instance, markers, props.waypoints, props.mode, props.active, callbacks, props.interaction === 'edit');
     });
   }, [props, ready]);
 
@@ -204,6 +205,25 @@ function addLayers(map: MapLibre.Map) {
   map.addLayer({ id: 'profile', type: 'circle', source: 'profile', paint: { 'circle-color': '#111', 'circle-radius': 7, 'circle-stroke-color': '#fff', 'circle-stroke-width': 3 } });
 }
 
+/** The web twin of the marker callout: the point's name and one way to remove it. */
+function deletePopup(maplibre: MapLibreModule, name: string, onDelete: () => void) {
+  const content = document.createElement('div');
+  content.className = 'waypoint-popup';
+  const label = document.createElement('span');
+  label.textContent = name;
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'waypoint-popup__remove';
+  remove.setAttribute('aria-label', `Remove ${name}`);
+  remove.textContent = '✕';
+  remove.addEventListener('click', (event) => {
+    event.stopPropagation();
+    onDelete();
+  });
+  content.append(label, remove);
+  return new maplibre.Popup({ closeButton: false, offset: 18 }).setDOMContent(content);
+}
+
 function setSource(map: MapLibre.Map, id: string, data: GeoJSON.FeatureCollection) {
   (map.getSource(id) as MapLibre.GeoJSONSource | undefined)?.setData(data);
 }
@@ -234,22 +254,34 @@ function renderMarkers(
   map: MapLibre.Map,
   markerRef: React.RefObject<MapLibre.Marker[]>,
   waypoints: Waypoint[],
+  mode: PlannerMapProps['mode'],
+  active: boolean,
   callbacks: React.RefObject<Callbacks>,
   editing: boolean,
 ) {
   markerRef.current.forEach((marker) => marker.remove());
   markerRef.current = waypoints.map((point, index) => {
+    const name = waypointLabel(mode, point.role, index);
     const element = document.createElement('button');
     element.type = 'button';
     element.className = `waypoint-marker waypoint-marker--${point.role}`;
+    element.title = name;
     element.textContent = point.role === 'start' ? 'A' : point.role === 'destination' ? 'B' : String(index + 1);
-    element.addEventListener('click', (event) => {
-      event.stopPropagation();
-      callbacks.current.onWaypointPress(point.id);
-    });
     const marker = new maplibre.Marker({ element, anchor: 'center', draggable: editing })
       .setLngLat([point.coordinate.lon, point.coordinate.lat])
       .addTo(map);
+    // A loop's start is also its finish, and the last point standing cannot go
+    // either, so neither offers to be removed.
+    if (active && editing && point.role !== 'start' && waypoints.length > 2)
+      marker.setPopup(deletePopup(maplibre, name, () => callbacks.current.onWaypointDelete(point.id)));
+    element.addEventListener('click', (event) => {
+      // The map stops here: a marker tap must not also drop a point. MapLibre
+      // opens a marker's popup from the map's own click handler, so stopping
+      // that propagation means toggling it here instead.
+      event.stopPropagation();
+      callbacks.current.onWaypointPress(point.id);
+      marker.togglePopup();
+    });
     marker.on('dragend', () => {
       const value = marker.getLngLat();
       callbacks.current.onWaypointMove(point.id, { lat: value.lat, lon: value.lng });

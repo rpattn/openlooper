@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { Pressable, StyleSheet, Text } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Animated, {
   Extrapolation,
   interpolate,
@@ -8,7 +8,7 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { COLOR, RADIUS, SHADOW } from '@/theme';
-import { OVERLAY_LABEL } from '../../../../src/domain/route-overlays';
+import { OVERLAY_LABEL, type LegendEntry } from '../../../../src/domain/route-overlays';
 import {
   MAP_STYLES,
   type InteractionMode,
@@ -24,6 +24,8 @@ export type MapControlsProps = {
   accent: string;
   mapStyle: MapStyleId;
   overlay: RouteOverlay;
+  /** Key to the active colouring, shown on the map while it is not the default. */
+  legend: LegendEntry[];
   /** Sheet height, so the controls ride above the sheet as it is dragged. */
   offset: SharedValue<number>;
   gap: number;
@@ -44,6 +46,7 @@ export function MapControls({
   accent,
   mapStyle,
   overlay,
+  legend,
   offset,
   gap,
   fadeAt,
@@ -62,6 +65,19 @@ export function MapControls({
   return (
     <>
       <FloatingColumn side="left" offset={offset} gap={gap} fadeAt={fadeAt}>
+        {/* A colouring other than the plain route needs a key, and the sheet is
+            the wrong place for it while the map is what is being read. */}
+        {hasRoute && overlay !== 'route' && open !== 'overlay' && !!legend.length && (
+          <GlassSurface variant="regular" style={styles.legend}>
+            <Text style={styles.legendTitle}>{OVERLAY_LABEL[overlay]}</Text>
+            {legend.map((entry) => (
+              <View key={entry.label} style={styles.legendRow}>
+                <View style={[styles.swatch, { backgroundColor: entry.color }]} />
+                <Text style={styles.legendText}>{entry.label}</Text>
+              </View>
+            ))}
+          </GlassSurface>
+        )}
         {open === 'overlay' && (
           <OptionPicker
             accent={accent}
@@ -115,10 +131,10 @@ export function MapControls({
               ? 'Editing the route. Switch to inspecting.'
               : 'Inspecting the route. Switch to editing.'
           }
-          // Filled in both modes, so the control still reads as the mode switch
-          // once it is no longer showing the pencil.
-          accent={editing ? accent : COLOR.ink}
-          active
+          // Filled while editing and plain while inspecting: the accent says
+          // the route can be changed, rather than marking a mode either way.
+          accent={accent}
+          active={editing}
           size={44}
           onPress={() => onInteraction(editing ? 'inspect' : 'edit')}
         />
@@ -231,4 +247,20 @@ const styles = StyleSheet.create({
   option: { width: 91, paddingHorizontal: 10, paddingVertical: 9, borderRadius: 9 },
   optionText: { color: COLOR.ink, fontSize: 12, fontWeight: '700' },
   optionTextActive: { color: '#fff', fontWeight: '900' },
+
+  legend: {
+    // The rows size themselves; a width cap plus a flexed label collapsed every
+    // band name to an ellipsis.
+    maxWidth: 240,
+    gap: 4,
+    paddingHorizontal: 11,
+    paddingVertical: 9,
+    borderRadius: RADIUS.panel,
+    overflow: 'hidden',
+    ...SHADOW.floating,
+  },
+  legendTitle: { color: COLOR.muted, fontSize: 9, fontWeight: '900', letterSpacing: 1.1 },
+  legendRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  swatch: { width: 16, height: 4, borderRadius: 2 },
+  legendText: { color: COLOR.ink, fontSize: 11, fontWeight: '600' },
 });

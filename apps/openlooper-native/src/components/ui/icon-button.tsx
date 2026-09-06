@@ -1,5 +1,6 @@
 import { SymbolView } from 'expo-symbols';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import type { ReactNode } from 'react';
+import { Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 
 import { COLOR, RADIUS, SHADOW } from '@/theme';
 import { GlassSurface } from './glass-surface';
@@ -33,9 +34,9 @@ export function IconButton({
         disabled && styles.disabled,
       ]}
     >
-      <GlassSurface
-        variant="regular"
-        tint={active ? accent : undefined}
+      <Surface
+        active={active}
+        accent={accent}
         style={[styles.surface, { width: size, height: size, borderRadius: size / 2 }]}
       >
         <View style={styles.center}>
@@ -51,8 +52,32 @@ export function IconButton({
             }
           />
         </View>
-      </GlassSurface>
+      </Surface>
     </Pressable>
+  );
+}
+
+/**
+ * An active control is a solid accent rather than tinted glass, so its white
+ * symbol keeps its contrast wherever the button lands on the map — and so the
+ * accent reads as "this is on" rather than as decoration.
+ */
+function Surface({
+  active,
+  accent,
+  style,
+  children,
+}: {
+  active: boolean;
+  accent: string;
+  style: StyleProp<ViewStyle>;
+  children: ReactNode;
+}) {
+  if (active) return <View style={[style, { backgroundColor: accent }]}>{children}</View>;
+  return (
+    <GlassSurface variant="regular" style={style}>
+      {children}
+    </GlassSurface>
   );
 }
 
