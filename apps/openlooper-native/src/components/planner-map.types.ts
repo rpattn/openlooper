@@ -2,6 +2,7 @@ import type {
   Activity,
   Coordinate,
   MapCamera,
+  MapStyleId,
   RouteAlternative,
   RouteIssue,
   RouteResult,
@@ -12,6 +13,9 @@ export type PlannerMapProps = {
   activity: Activity;
   activeTool: 'start' | 'destination' | 'add';
   camera: MapCamera;
+  mapStyle: MapStyleId;
+  /** Height of the sheet, so route fitting keeps the route above it. */
+  bottomInset: number;
   waypoints: Waypoint[];
   route?: RouteResult;
   fitRequest: number;

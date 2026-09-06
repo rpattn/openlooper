@@ -2,21 +2,35 @@ import MapView, {
   Marker,
   Polyline,
   type MapPressEvent,
+  type MapType,
   type Region,
 } from 'react-native-maps';
 import { useEffect, useRef } from 'react';
-import { StyleSheet } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 
-import { ACTIVITY, type Coordinate } from '@/domain/models';
+import { COLOR } from '@/theme';
+import { roleColor } from './ui/waypoint-role';
+import { ACTIVITY, type Coordinate, type MapStyleId } from '@/domain/models';
 import type { PlannerMapProps } from './planner-map.types';
 
 const nativeCoordinates = (points: Coordinate[]) =>
   points.map((point) => ({ latitude: point.lat, longitude: point.lon }));
 
+// MapKit has no terrain type, so the planner's styles map straight onto the
+// four it does support.
+const MAP_TYPE: Record<MapStyleId, MapType> = {
+  standard: 'standard',
+  muted: 'mutedStandard',
+  satellite: 'satellite',
+  hybrid: 'hybrid',
+};
+
 export function PlannerMap({
   activity,
   activeTool,
   camera,
+  mapStyle,
+  bottomInset,
   waypoints,
   route,
   fitRequest,
@@ -33,11 +47,14 @@ export function PlannerMap({
 }: PlannerMapProps) {
   const map = useRef<MapView>(null);
   const emittedCenter = useRef<Coordinate | undefined>(undefined);
+  const inset = useRef(bottomInset);
+  inset.current = bottomInset;
+  const imagery = mapStyle === 'satellite' || mapStyle === 'hybrid';
 
   useEffect(() => {
     if (!route?.geometry.length) return;
     map.current?.fitToCoordinates(nativeCoordinates(route.geometry), {
-      edgePadding: { top: 80, right: 50, bottom: 320, left: 50 },
+      edgePadding: { top: 110, right: 50, bottom: inset.current + 40, left: 50 },
       animated: true,
     });
   }, [fitRequest, route?.geometry, route?.id]);
@@ -54,7 +71,7 @@ export function PlannerMap({
   useEffect(() => {
     if (!highlightedIssue?.geometry.length) return;
     map.current?.fitToCoordinates(nativeCoordinates(highlightedIssue.geometry), {
-      edgePadding: { top: 100, right: 60, bottom: 340, left: 60 },
+      edgePadding: { top: 130, right: 60, bottom: inset.current + 60, left: 60 },
       animated: true,
     });
   }, [highlightedIssue]);
@@ -63,6 +80,13 @@ export function PlannerMap({
     <MapView
       ref={map}
       style={styles.map}
+      mapType={MAP_TYPE[mapStyle]}
+      showsUserLocation
+      showsMyLocationButton={false}
+      showsCompass={false}
+      showsScale={false}
+      toolbarEnabled={false}
+      userInterfaceStyle={imagery ? 'dark' : 'light'}
       initialRegion={{
         latitude: camera.center.lat,
         longitude: camera.center.lon,
@@ -90,7 +114,7 @@ export function PlannerMap({
           <Polyline
             key={item.id}
             coordinates={nativeCoordinates(item.result.geometry)}
-            strokeColor="rgba(45,54,48,0.34)"
+            strokeColor={imagery ? 'rgba(255,255,255,0.5)' : 'rgba(45,54,48,0.34)'}
             strokeWidth={5}
             tappable
             onPress={(event) => {
@@ -130,7 +154,7 @@ export function PlannerMap({
             <Polyline
               key={issue.id}
               coordinates={nativeCoordinates(issue.geometry)}
-              strokeColor={issue.severity === 'high' ? '#b3261e' : '#d77b16'}
+              strokeColor={issue.severity === 'high' ? COLOR.danger : COLOR.warning}
               strokeWidth={7}
               tappable
               onPress={(event) => {
@@ -144,7 +168,7 @@ export function PlannerMap({
       {!route && waypoints.length > 1 && (
         <Polyline
           coordinates={nativeCoordinates(waypoints.map((point) => point.coordinate))}
-          strokeColor="#273f78"
+          strokeColor={COLOR.via}
           strokeWidth={4}
           lineDashPattern={[8, 6]}
         />
@@ -152,7 +176,7 @@ export function PlannerMap({
       {highlightedIssue && (
         <Polyline
           coordinates={nativeCoordinates(highlightedIssue.geometry)}
-          strokeColor="#ffd24a"
+          strokeColor={COLOR.highlight}
           strokeWidth={10}
         />
       )}
@@ -160,19 +184,13 @@ export function PlannerMap({
         <Marker
           key={point.id}
           coordinate={{ latitude: point.coordinate.lat, longitude: point.coordinate.lon }}
+          anchor={{ x: 0.5, y: 0.5 }}
           title={
             point.role === 'start'
               ? 'Start'
               : point.role === 'destination'
                 ? 'Finish'
                 : `Point ${index + 1}`
-          }
-          pinColor={
-            point.role === 'start'
-              ? '#177657'
-              : point.role === 'destination'
-                ? '#b83c34'
-                : '#273f78'
           }
           draggable
           onDragEnd={(event) =>
@@ -185,25 +203,53 @@ export function PlannerMap({
             event.stopPropagation();
             onWaypointPress(point.id);
           }}
-        />
+        >
+          <View style={[styles.pin, { backgroundColor: roleColor(point.role) }]}>
+            <Text style={styles.pinText}>
+              {point.role === 'start'
+                ? 'A'
+                : point.role === 'destination'
+                  ? 'B'
+                  : String(index + 1)}
+            </Text>
+          </View>
+        </Marker>
       ))}
       {profilePoint && (
         <Marker
           coordinate={{ latitude: profilePoint.lat, longitude: profilePoint.lon }}
-          pinColor="#111"
+          anchor={{ x: 0.5, y: 0.5 }}
           title="Elevation profile position"
-        />
+        >
+          <View style={styles.profilePin} />
+        </Marker>
       )}
     </MapView>
   );
 }
 
 const styles = StyleSheet.create({
-  map: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
+  map: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
+  pin: {
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 14,
+    borderWidth: 2.5,
+    borderColor: '#fff',
+    shadowColor: '#0b120d',
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+  },
+  pinText: { color: '#fff', fontSize: 11, fontWeight: '900' },
+  profilePin: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    borderWidth: 3,
+    borderColor: '#fff',
+    backgroundColor: '#111',
   },
 });

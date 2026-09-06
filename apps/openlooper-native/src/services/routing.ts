@@ -101,6 +101,7 @@ export async function traceRoute(
             'edge.travel_mode', 'edge.travel_type', 'edge.max_upward_grade',
             'edge.max_downward_grade', 'edge.lane_count', 'edge.cycle_lane',
             'edge.bicycle_network', 'edge.shoulder', 'edge.sidewalk', 'edge.way_id',
+            'edge.speed',
           ],
         },
       },

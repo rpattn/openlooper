@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import type { PlannerState } from '../../../../src/domain/models';
+import { DEFAULT_MAP_STYLE, DEFAULT_OVERLAY } from '../../../../src/domain/models';
 
 const KEY = 'openlooper-session';
 const FORMAT = 1;
@@ -13,6 +14,10 @@ export async function restorePlanner(): Promise<PlannerState | undefined> {
     if (saved.format !== FORMAT || !saved.state?.plan || !saved.state.camera) return undefined;
     return {
       ...saved.state,
+      mapStyle: saved.state.mapStyle ?? DEFAULT_MAP_STYLE,
+      overlay: saved.state.overlay ?? DEFAULT_OVERLAY,
+      interaction: saved.state.interaction ?? 'edit',
+      loopTuned: Boolean(saved.state.loopTuned),
       loading: false,
       progress: undefined,
       error: undefined,

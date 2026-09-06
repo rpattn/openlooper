@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type * as MapLibre from 'maplibre-gl';
 
-import { ACTIVITY, type Coordinate, type RouteIssue, type Waypoint } from '@/domain/models';
+import { ACTIVITY, type Coordinate, type MapStyleId, type RouteIssue, type Waypoint } from '@/domain/models';
 import type { PlannerMapProps } from './planner-map.types';
 
 type MapLibreModule = typeof import('maplibre-gl');
@@ -10,6 +10,14 @@ type Callbacks = Pick<
   'onMapPress' | 'onWaypointPress' | 'onWaypointMove' | 'onIssuePress' | 'onEdgePress' | 'onAlternativePress' | 'onCameraChange'
 >;
 const WORKER_URL = 'https://unpkg.com/maplibre-gl@6.6.0/dist/maplibre-gl-worker.mjs';
+// OpenFreeMap serves no imagery, so the web map offers vector styles only and
+// falls back to the default style if an imagery mode reaches it anyway.
+const STYLE_URL: Record<MapStyleId, string> = {
+  standard: 'https://tiles.openfreemap.org/styles/liberty',
+  muted: 'https://tiles.openfreemap.org/styles/positron',
+  satellite: 'https://tiles.openfreemap.org/styles/liberty',
+  hybrid: 'https://tiles.openfreemap.org/styles/liberty',
+};
 const collection = (features: GeoJSON.Feature[] = []): GeoJSON.FeatureCollection => ({
   type: 'FeatureCollection',
   features,
@@ -30,6 +38,10 @@ export function PlannerMap(props: PlannerMapProps) {
   const map = useRef<MapLibre.Map | null>(null);
   const markers = useRef<MapLibre.Marker[]>([]);
   const emittedCenter = useRef<Coordinate | undefined>(undefined);
+  const appliedStyle = useRef<MapStyleId>(props.mapStyle);
+  // Read through a ref so resizing the sheet never re-fits the route on its own.
+  const inset = useRef(props.bottomInset);
+  inset.current = props.bottomInset;
   const callbacks = useRef<Callbacks>(props);
   const snapshot = useRef(props);
   callbacks.current = props;
@@ -44,7 +56,7 @@ export function PlannerMap(props: PlannerMapProps) {
         module.setWorkerUrl(WORKER_URL);
         const instance = new module.Map({
           container: container.current,
-          style: 'https://tiles.openfreemap.org/styles/liberty',
+          style: STYLE_URL[snapshot.current.mapStyle],
           center: [snapshot.current.camera.center.lon, snapshot.current.camera.center.lat],
           zoom: snapshot.current.camera.zoom,
           attributionControl: false,
@@ -112,6 +124,22 @@ export function PlannerMap(props: PlannerMapProps) {
 
   useEffect(() => {
     const instance = map.current;
+    if (!instance || !ready || appliedStyle.current === props.mapStyle) return;
+    appliedStyle.current = props.mapStyle;
+    // Swapping the style drops every source and layer the planner added, so
+    // they are rebuilt once the new style reports in.
+    setReady(false);
+    instance.setStyle(STYLE_URL[props.mapStyle]);
+    instance.once('styledata', () => {
+      if (map.current !== instance) return;
+      addLayers(instance);
+      renderData(instance, snapshot.current);
+      setReady(true);
+    });
+  }, [props.mapStyle, ready]);
+
+  useEffect(() => {
+    const instance = map.current;
     const emitted = emittedCenter.current;
     if (!instance || (emitted && Math.abs(emitted.lat - props.camera.center.lat) < 0.00001 && Math.abs(emitted.lon - props.camera.center.lon) < 0.00001)) return;
     instance.flyTo({ center: [props.camera.center.lon, props.camera.center.lat], zoom: props.camera.zoom });
@@ -125,7 +153,10 @@ export function PlannerMap(props: PlannerMapProps) {
     const east = Math.max(...coordinates.map((point) => point.lon));
     const south = Math.min(...coordinates.map((point) => point.lat));
     const north = Math.max(...coordinates.map((point) => point.lat));
-    instance.fitBounds([[west, south], [east, north]], { padding: 70, maxZoom: 16 });
+    instance.fitBounds([[west, south], [east, north]], {
+      padding: { top: 90, right: 60, bottom: inset.current + 40, left: 60 },
+      maxZoom: 16,
+    });
   }, [props.fitRequest, props.route?.geometry, props.route?.id]);
 
   useEffect(() => {
@@ -136,7 +167,10 @@ export function PlannerMap(props: PlannerMapProps) {
     const east = Math.max(...coordinates.map((point) => point.lon));
     const south = Math.min(...coordinates.map((point) => point.lat));
     const north = Math.max(...coordinates.map((point) => point.lat));
-    instance.fitBounds([[west, south], [east, north]], { padding: 90, maxZoom: 17 });
+    instance.fitBounds([[west, south], [east, north]], {
+      padding: { top: 110, right: 70, bottom: inset.current + 60, left: 70 },
+      maxZoom: 17,
+    });
   }, [props.highlightedIssue]);
 
   return (

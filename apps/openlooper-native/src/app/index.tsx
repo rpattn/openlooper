@@ -1,6 +1,8 @@
 import * as Location from 'expo-location';
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSharedValue } from 'react-native-reanimated';
 
 import { closestSegment, distanceKm } from '../../../../src/domain/geometry';
 import { loopSeeds, scaleLoop } from '../../../../src/domain/loops';
@@ -18,12 +20,15 @@ import {
 import type {
   Coordinate,
   LoopScoringWeights,
+  PlannerState,
   RouteAlternative,
   RoutePlan,
   RouteResult,
   Waypoint,
 } from '@/domain/models';
-import { waypoint } from '@/domain/models';
+import { ACTIVITY, waypoint } from '@/domain/models';
+import { editableWaypoints, loopAnchors } from '@/domain/waypoints';
+import { MapControls } from '@/components/map-controls';
 import { PlannerMap } from '@/components/planner-map';
 import { PlannerSheet } from '@/components/planner-sheet';
 import { routeEvidence, routeEvidenceBatch } from '@/services/evidence';
@@ -83,6 +88,13 @@ export default function PlannerScreen() {
   const [evidenceRanking, setEvidenceRanking] = useState(true);
   const [scoringWeights, setScoringWeights] = useState<LoopScoringWeights>(DEFAULT_LOOP_SCORING_WEIGHTS);
   const [fitRequest, setFitRequest] = useState(0);
+  const [locating, setLocating] = useState(false);
+  const { height: windowHeight, width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const desktop = width >= 800;
+  // Drives the floating controls so they ride above the sheet as it is dragged.
+  // Seeded at the half detent the planner opens on, so nothing jumps on mount.
+  const sheetHeight = useSharedValue(windowHeight * 0.55);
   const evidenceRankingRef = useRef(evidenceRanking);
   const scoringWeightsRef = useRef(scoringWeights);
   const currentState = useRef(state);
@@ -142,11 +154,25 @@ export default function PlannerScreen() {
     if (recalculate && clean.length >= 2) void calculate(routePlan(currentState.current, clean));
   }, [calculate]);
 
+  /** Drops the current route and stops any routing still running against the
+   * points it was built from. */
+  const discardRoute = useCallback(() => {
+    controller.current?.abort();
+    requestId.current++;
+    dispatch({ type: 'alternatives', alternatives: [] });
+  }, []);
+
   const mapPress = useCallback((coordinate: Coordinate) => {
     const current = currentState.current;
     const points = current.plan.waypoints;
     if (current.plan.mode === 'loop') {
-      setWaypoints([waypoint(coordinate, 'start')], false);
+      const loop = editableWaypoints(current);
+      const next = !loop.length || current.activeTool === 'start'
+        ? [waypoint(coordinate, 'start'), ...loop.slice(1)]
+        : [...loop, waypoint(coordinate, 'via')];
+      dispatch({ type: 'waypoints', waypoints: next });
+      discardRoute();
+      if (!loop.length) dispatch({ type: 'tool', tool: 'add' });
       return;
     }
     if (current.activeTool === 'add' && current.selectedRoute) {
@@ -171,7 +197,7 @@ export default function PlannerScreen() {
       const next = points.length > 1 ? [points[0]!, ...points.slice(1, -1), waypoint(coordinate, 'destination')] : [...points, waypoint(coordinate, 'destination')];
       setWaypoints(next);
     }
-  }, [setWaypoints]);
+  }, [discardRoute, setWaypoints]);
 
   const waypointPress = useCallback((id: string) => {
     const current = currentState.current;
@@ -198,7 +224,7 @@ export default function PlannerScreen() {
     controller.current = abort;
     const id = ++requestId.current;
     dispatch({ type: 'routeStart', progress: 'Trying 12 loop shapes…' });
-    const seeds = loopSeeds(start, target, current.loopSeed);
+    const seeds = loopSeeds(start, target, current.loopSeed, loopAnchors(plan.waypoints));
     const basePlan = { ...plan, mode: 'loop' as const };
     try {
       const initial = await pool(seeds, LOOP_LIMITS.maxConcurrent, async (seed, index) => {
@@ -282,25 +308,86 @@ export default function PlannerScreen() {
     });
   }
 
-  async function locate() {
-    const permission = await Location.requestForegroundPermissionsAsync();
-    if (!permission.granted) {
-      dispatch({ type: 'routeError', error: 'Location permission was unavailable or denied. Choose a start on the map instead.' });
+  /** Replaces the start without disturbing the rest of the plan, whichever mode
+   * the planner is in. */
+  const startAt = useCallback((coordinate: Coordinate) => {
+    const current = currentState.current;
+    if (current.plan.mode === 'loop') {
+      const loop = editableWaypoints(current);
+      dispatch({ type: 'waypoints', waypoints: [waypoint(coordinate, 'start'), ...loop.slice(1)] });
+      discardRoute();
+      dispatch({ type: 'tool', tool: 'add' });
       return;
     }
-    const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-    const coordinate = { lat: position.coords.latitude, lon: position.coords.longitude };
-    dispatch({ type: 'camera', center: coordinate, zoom: 15 });
-    mapPress(coordinate);
+    const points = current.plan.waypoints;
+    const next = points.length
+      ? [waypoint(coordinate, 'start'), ...points.slice(1)]
+      : [waypoint(coordinate, 'start')];
+    setWaypoints(next, next.length >= 2);
+    if (current.plan.mode === 'pointToPoint' && next.length < 2)
+      dispatch({ type: 'tool', tool: 'destination' });
+  }, [discardRoute, setWaypoints]);
+
+  /** Replaces the editable points after a reorder or removal in the sheet. */
+  const editWaypoints = useCallback((points: Waypoint[]) => {
+    const current = currentState.current;
+    if (current.plan.mode !== 'loop') {
+      setWaypoints(points);
+      // A single point can no longer describe a route, so drop the stale one.
+      if (points.length < 2) discardRoute();
+      return;
+    }
+    dispatch({ type: 'waypoints', waypoints: points });
+    discardRoute();
+  }, [discardRoute, setWaypoints]);
+
+  const setSheet = useCallback((sheet: PlannerState['sheet']) => {
+    dispatch({ type: 'sheet', sheet });
+  }, []);
+
+  async function locate() {
+    setLocating(true);
+    try {
+      const permission = await Location.requestForegroundPermissionsAsync();
+      if (!permission.granted) {
+        dispatch({ type: 'routeError', error: 'Location permission was unavailable or denied. Choose a start on the map instead.' });
+        return;
+      }
+      const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      const coordinate = { lat: position.coords.latitude, lon: position.coords.longitude };
+      dispatch({ type: 'camera', center: coordinate, zoom: 15 });
+      startAt(coordinate);
+    } catch (error) {
+      dispatch({ type: 'routeError', error: `Your location is unavailable (${(error as Error).message}). Choose a start on the map instead.` });
+    } finally {
+      setLocating(false);
+    }
   }
 
   const highlightedIssue = state.selectedRoute?.issues.find((issue) => issue.id === state.highlightedIssueId);
+  // Approximate the sheet's footprint so route fitting keeps the route clear of it.
+  const bottomInset = desktop
+    ? 32
+    : state.sheet === 'full'
+      ? windowHeight * 0.92
+      : state.sheet === 'half'
+        ? windowHeight * 0.55
+        : 120;
+
+  useEffect(() => {
+    // The desktop panel sits beside the map, so the controls only clear the
+    // safe area rather than tracking a sheet.
+    if (desktop) sheetHeight.value = insets.bottom;
+  }, [desktop, insets.bottom, sheetHeight]);
+
   return (
     <View style={styles.root}>
       <PlannerMap
         activity={state.plan.activity}
         activeTool={state.activeTool}
         camera={state.camera}
+        mapStyle={state.mapStyle}
+        bottomInset={bottomInset}
         waypoints={state.plan.waypoints}
         route={state.selectedRoute}
         fitRequest={fitRequest}
@@ -315,9 +402,24 @@ export default function PlannerScreen() {
         onAlternativePress={selectAlternative}
         onCameraChange={(center, zoom) => dispatch({ type: 'camera', center, zoom })}
       />
-      <View pointerEvents="none" style={styles.brandPill}><Text style={styles.brand}>OPENLOOPER</Text></View>
+      <View pointerEvents="none" style={[styles.brandPill, { top: insets.top + 8 }]}>
+        <Text style={styles.brand}>OPENLOOPER</Text>
+      </View>
+      <MapControls
+        accent={ACTIVITY[state.plan.activity].color}
+        mapStyle={state.mapStyle}
+        offset={sheetHeight}
+        gap={14}
+        maxOffset={windowHeight * 0.6}
+        locating={locating}
+        hasRoute={Boolean(state.selectedRoute)}
+        onMapStyle={(style) => dispatch({ type: 'mapStyle', style })}
+        onLocate={() => void locate()}
+        onFitRoute={() => setFitRequest((value) => value + 1)}
+      />
       <PlannerSheet
         state={state}
+        sheetHeight={sheetHeight}
         scoringWeights={scoringWeights}
         evidenceRanking={evidenceRanking}
         onEvidenceRanking={(enabled) => rerank(enabled, scoringWeightsRef.current)}
@@ -332,23 +434,21 @@ export default function PlannerScreen() {
         onCancel={() => { controller.current?.abort(); requestId.current++; dispatch({ type: 'routeError', error: 'Route calculation stopped.' }); }}
         onSelectAlternative={selectAlternative}
         onReverse={() => setWaypoints([...state.plan.waypoints].reverse())}
-        onRemove={(id) => setWaypoints(state.plan.waypoints.filter((point) => point.id !== id))}
+        onWaypoints={editWaypoints}
         onClear={() => { controller.current?.abort(); requestId.current++; dispatch({ type: 'clear' }); }}
         onIssue={(issue) => dispatch({ type: 'highlightIssue', id: issue.id })}
         onEdgeDismiss={() => dispatch({ type: 'highlightEdge' })}
         onProfile={(coordinate) => dispatch({ type: 'profilePoint', coordinate })}
-        onSheet={(sheet) => dispatch({ type: 'sheet', sheet })}
+        onSheet={setSheet}
         onSearchSelect={(coordinate) => {
           dispatch({ type: 'camera', center: coordinate, zoom: 15 });
-          const points = currentState.current.plan.waypoints;
-          setWaypoints(points.length ? [{ ...points[0]!, coordinate }, ...points.slice(1)] : [waypoint(coordinate, 'start')], points.length >= 2);
+          startAt(coordinate);
         }}
-        onLocate={() => void locate()}
+        onFocusPoint={(coordinate) => dispatch({ type: 'camera', center: coordinate, zoom: Math.max(15, state.camera.zoom) })}
         onExport={() => {
           if (!state.selectedRoute) return;
           void exportGpx(state.selectedRoute, state.plan.activity).catch((error) => dispatch({ type: 'routeError', error: (error as Error).message }));
         }}
-        onFitRoute={() => setFitRequest((value) => value + 1)}
       />
     </View>
   );
@@ -356,6 +456,6 @@ export default function PlannerScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#e9eee8' },
-  brandPill: { position: 'absolute', top: 18, right: 18, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, backgroundColor: 'rgba(250,251,247,0.94)', shadowColor: '#172019', shadowOpacity: 0.14, shadowRadius: 14, shadowOffset: { width: 0, height: 5 } },
+  brandPill: { position: 'absolute', right: 16, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, backgroundColor: 'rgba(250,251,247,0.94)', shadowColor: '#172019', shadowOpacity: 0.14, shadowRadius: 14, shadowOffset: { width: 0, height: 5 } },
   brand: { color: '#172019', fontSize: 11, fontWeight: '900', letterSpacing: 1.5 },
 });

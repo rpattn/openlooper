@@ -27,7 +27,9 @@ export async function routeEvidence(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         edges: edges.map((edge) => edgeRequest(route, edge)),
-        includeSegments: false,
+        // Segments carry the way ids the recorded-use colouring needs. Only the
+        // selected route asks for them; ranking many candidates does not.
+        includeSegments: true,
       }),
       signal,
     });
@@ -35,11 +37,13 @@ export async function routeEvidence(
     const data = (await response.json()) as {
       evidencedDistanceM: number;
       evidencedFraction: number;
+      segments?: GeoJSON.FeatureCollection;
     };
     return {
       status: 'available',
       evidencedDistanceKm: data.evidencedDistanceM / 1000,
       evidencedDistancePct: data.evidencedFraction * 100,
+      segments: data.segments,
     };
   } catch (error) {
     if ((error as Error).name === 'AbortError') throw error;
