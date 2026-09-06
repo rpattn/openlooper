@@ -32,7 +32,9 @@ import type {
 } from '@/domain/models';
 import { editableWaypoints } from '@/domain/waypoints';
 import { DragSheet } from './drag-sheet';
+import { PrimaryButton, SmallButton } from './ui/buttons';
 import { Collapsible } from './ui/collapsible';
+import { DistanceField } from './ui/distance-field';
 import { GlassSurface } from './ui/glass-surface';
 import { ProfileChart } from './ui/profile-chart';
 import { Segmented } from './ui/segmented';
@@ -46,8 +48,6 @@ type Props = {
   sheetHeight: SharedValue<number>;
   onEvidenceRanking: (enabled: boolean) => void;
   onScoringWeights: (weights: LoopScoringWeights) => void;
-  onMode: (mode: PlannerState['plan']['mode']) => void;
-  onActivity: (activity: PlannerState['plan']['activity']) => void;
   onPreferences: (preferences: RoutingPreferences) => void;
   onTool: (tool: PlannerState['activeTool']) => void;
   onTarget: (km: number) => void;
@@ -182,24 +182,6 @@ export function PlannerSheet(props: Props) {
           <Text style={styles.searchResultText}>{result.display_name}</Text>
         </Pressable>
       ))}
-
-      <Segmented
-        accessibilityLabel="Activity"
-        values={(Object.keys(ACTIVITY) as Array<keyof typeof ACTIVITY>).map((value) => ({
-          value,
-          label: ACTIVITY[value].label,
-        }))}
-        selected={state.plan.activity}
-        accent={accent}
-        onChange={props.onActivity}
-      />
-      <Segmented
-        accessibilityLabel="Route type"
-        values={CREATION_MODES}
-        selected={state.plan.mode}
-        accent={accent}
-        onChange={props.onMode}
-      />
 
       {editing && state.plan.mode === 'pointToPoint' && (
         <Segmented
@@ -436,7 +418,7 @@ function Peek({
             ? `${route.distanceKm.toFixed(1)} km · ${duration(route.durationSeconds)}`
             : state.loading
               ? 'Calculating route…'
-              : 'Make a route worth taking'}
+              : 'Place your points on the map'}
         </Text>
       </View>
       <View style={styles.peekActions}>
@@ -626,39 +608,7 @@ function DeveloperSettings(props: Props & { accent: string }) {
   );
 }
 
-/**
- * Keeps its own text while the planner types, so clearing the field leaves it
- * empty instead of snapping back to the clamped minimum.
- */
-function DistanceField({ value, onChange }: { value: number; onChange: (km: number) => void }) {
-  const [text, setText] = useState(String(value));
-  useEffect(() => {
-    setText((current) => (Number(current) === value ? current : String(value)));
-  }, [value]);
-  return (
-    <View style={styles.distanceWrap}>
-      <TextInput
-        value={text}
-        onChangeText={(next) => {
-          setText(next);
-          const parsed = Number(next);
-          if (next.trim() && Number.isFinite(parsed) && parsed >= 1) onChange(parsed);
-        }}
-        onBlur={() => setText(String(value))}
-        keyboardType="decimal-pad"
-        selectTextOnFocus
-        returnKeyType="done"
-        style={styles.distanceInput}
-        accessibilityLabel="Target distance in kilometres"
-      />
-      <Text style={styles.muted}>km</Text>
-    </View>
-  );
-}
-
 function ChoiceButton({ label, selected, accent, onPress }: { label: string; selected: boolean; accent: string; onPress: () => void }) { return <Pressable onPress={onPress} style={[styles.choice, selected && { borderColor: accent, backgroundColor: '#fff7f3' }]}><Text style={styles.choiceText}>{label}</Text></Pressable>; }
-function SmallButton({ label, onPress, dark }: { label: string; onPress: () => void; dark?: boolean }) { return <Pressable onPress={onPress} style={[styles.smallButton, dark && styles.darkButton]}><Text style={[styles.smallButtonText, dark && styles.darkButtonText]}>{label}</Text></Pressable>; }
-function PrimaryButton({ label, accent, onPress, disabled }: { label: string; accent: string; onPress: () => void; disabled?: boolean }) { return <Pressable disabled={disabled} onPress={onPress} style={[styles.primary, { backgroundColor: accent }, disabled && styles.disabled]}><Text style={styles.primaryText}>{label}</Text></Pressable>; }
 function Toggle({ label, value, onChange }: { label: string; value: boolean; onChange: (value: boolean) => void }) { return <View style={styles.toggleRow}><Text style={styles.label}>{label}</Text><Switch value={value} onValueChange={onChange} /></View>; }
 function PreferenceSlider({ label, value, accent, onChange }: { label: string; value: number; accent: string; onChange: (value: number) => void }) { return <View><View style={styles.sliderHeader}><Text style={styles.label}>{label}</Text><Text style={styles.output}>{value.toFixed(1)}</Text></View><Slider minimumValue={0} maximumValue={1} step={0.1} value={value} minimumTrackTintColor={accent} onSlidingComplete={onChange} accessibilityLabel={label} /></View>; }
 function Notice({ text, error, action, onAction }: { text: string; error?: boolean; action?: string; onAction?: () => void }) { return <View style={[styles.notice, error && styles.noticeError]}><Text style={styles.noticeText}>{text}</Text>{action && onAction && <SmallButton label={action} onPress={onAction} />}</View>; }
@@ -703,16 +653,10 @@ const styles = StyleSheet.create({
   panel: { gap: 9, padding: 12, borderRadius: RADIUS.panel, backgroundColor: COLOR.panel },
   fieldRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   label: { color: COLOR.ink, fontSize: 13, fontWeight: '700' },
-  distanceWrap: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  distanceInput: { width: 66, minHeight: 40, paddingHorizontal: 10, borderWidth: 1, borderColor: '#ccd2cb', borderRadius: 9, backgroundColor: COLOR.raised, color: COLOR.ink, fontSize: 17, fontWeight: '900' },
   hint: { color: COLOR.muted, fontSize: 12, lineHeight: 17 },
   disclaimer: { color: COLOR.muted, fontSize: 10, lineHeight: 15 },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   sectionTitle: { color: COLOR.ink, fontSize: 14, fontWeight: '900' },
-  smallButton: { minHeight: 36, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#ccd2cb', borderRadius: 9, backgroundColor: COLOR.raised },
-  smallButtonText: { color: COLOR.ink, fontSize: 11, fontWeight: '800' },
-  darkButton: { backgroundColor: COLOR.ink, borderColor: COLOR.ink }, darkButtonText: { color: '#fff' },
-  primary: { minHeight: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 11 }, primaryText: { color: '#fff', fontWeight: '900' }, disabled: { opacity: 0.4 },
   toggleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   sliderHeader: { flexDirection: 'row', justifyContent: 'space-between' }, output: { color: COLOR.muted, fontSize: 12, fontVariant: ['tabular-nums'] },
   notice: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 11, borderRadius: 11, backgroundColor: '#e9efe5' }, noticeError: { backgroundColor: '#f9e3df' }, noticeText: { flex: 1, color: COLOR.ink, fontSize: 12 },

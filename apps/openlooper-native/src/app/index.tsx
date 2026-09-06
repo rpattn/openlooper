@@ -1,100 +1,94 @@
-import * as Location from 'expo-location';
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { StyleSheet, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useSharedValue } from 'react-native-reanimated';
+import Animated, {
+  Easing,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 
-import { closestSegment, distanceKm } from '../../../../src/domain/geometry';
-import { loopSeeds, scaleLoop } from '../../../../src/domain/loops';
-import { analyzeRoute, mapEdges } from '../../../../src/domain/route-analysis';
-import {
-  DEFAULT_LOOP_SCORING_WEIGHTS,
-  hasDisconnectedJump,
-  LOOP_LIMITS,
-  repeatedCoverage,
-  repetitionDescription,
-  routeSimilarity,
-  scoreRoute,
-  surfaceConcernPercentage,
-} from '../../../../src/domain/route-scoring';
 import type {
-  Coordinate,
-  LoopScoringWeights,
+  Activity,
+  CreationMode,
+  InteractionMode,
   PlannerState,
-  RouteAlternative,
   RoutePlan,
-  RouteResult,
-  Waypoint,
 } from '@/domain/models';
-import { ACTIVITY, waypoint } from '@/domain/models';
-import { closedLoop, editableWaypoints, loopAnchors, openLoop } from '@/domain/waypoints';
+import { ACTIVITY } from '@/domain/models';
 import { overlayRender, overlaySpans } from '../../../../src/domain/route-overlays';
 import { routeSeries } from '../../../../src/domain/route-series';
+import type { SavedRoutePage } from '@/domain/saved-route';
+import { savedRoute, suggestedName } from '@/domain/saved-route';
+import { HomeScreen } from '@/components/home-screen';
 import { MapControls } from '@/components/map-controls';
+import { RouteBar } from '@/components/route-bar';
 import { SHEET_FRACTION, sheetHeightFor } from '@/components/sheet-detents';
 import { PlannerMap } from '@/components/planner-map';
 import { PlannerSheet } from '@/components/planner-sheet';
-import { routeEvidence, routeEvidenceBatch } from '@/services/evidence';
+import { Dialog } from '@/components/ui/dialog';
 import { exportGpx } from '@/services/gpx';
-import { persistPlanner, restorePlanner } from '@/services/persistence';
-import { requestRoute, traceRoute } from '@/services/routing';
-import {
-  initialPlannerState,
-  normalizedWaypoints,
-  plannerReducer,
-  routePlan,
-} from '@/state/planner';
+import { deleteRoute, listRoutes, loadRoute, putRoute } from '@/services/route-store';
+import { initialPlannerState } from '@/state/planner';
+import { usePlanner } from '@/state/use-planner';
 
-async function pool<T, R>(
-  items: T[],
-  limit: number,
-  work: (item: T, index: number) => Promise<R>,
-): Promise<PromiseSettledResult<R>[]> {
-  const output: PromiseSettledResult<R>[] = new Array(items.length);
-  let cursor = 0;
-  async function worker() {
-    while (cursor < items.length) {
-      const index = cursor++;
-      try {
-        output[index] = { status: 'fulfilled', value: await work(items[index]!, index) };
-      } catch (reason) {
-        output[index] = { status: 'rejected', reason };
-      }
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return output;
-}
+const PAGE_SIZE = 4;
+const OPEN = { duration: 420, easing: Easing.out(Easing.cubic) };
+const CLOSE = { duration: 380, easing: Easing.inOut(Easing.cubic) };
 
-function loopLabel(result: RouteResult, metrics: NonNullable<RouteAlternative['metrics']>) {
-  const evidence = result.useEvidence?.status === 'available'
-    ? `${Math.round(result.useEvidence.evidencedDistancePct)}% evidenced distance`
-    : 'evidenced distance unavailable';
-  return [
-    `${Math.round(metrics.distanceError * 100)}% target error`,
-    repetitionDescription(metrics.repeatedCoverage),
-    `${Math.round(surfaceConcernPercentage(result))}% recorded unpaved/rough concern`,
-    evidence,
-  ].join(' · ');
-}
-
-async function attributeGeometry(result: RouteResult, plan: RoutePlan, signal?: AbortSignal) {
-  const trace = await traceRoute(result, plan.activity, signal);
-  const edges = mapEdges(trace.edges ?? [], result.geometry.length);
-  if (!edges.length) throw new Error('Route attribution did not align to the returned route.');
-  return { ...result, edges, issues: analyzeRoute(result, edges, plan.activity) };
+/**
+ * What counts as a change worth keeping. Comparing this against the value taken
+ * when the route was opened is what makes leaving the map ask before it throws
+ * an edit away.
+ */
+function signature(plan: RoutePlan, routeId?: string) {
+  return JSON.stringify({
+    routeId,
+    mode: plan.mode,
+    activity: plan.activity,
+    target: plan.targetDistanceKm,
+    preferences: plan.preferences,
+    points: plan.waypoints.map((point) => [
+      point.role,
+      point.coordinate.lat.toFixed(6),
+      point.coordinate.lon.toFixed(6),
+    ]),
+  });
 }
 
 export default function PlannerScreen() {
-  const [state, dispatch] = useReducer(plannerReducer, initialPlannerState);
-  const [restored, setRestored] = useState(false);
-  const [evidenceRanking, setEvidenceRanking] = useState(true);
-  const [scoringWeights, setScoringWeights] = useState<LoopScoringWeights>(DEFAULT_LOOP_SCORING_WEIGHTS);
-  const [fitRequest, setFitRequest] = useState(0);
-  const [locating, setLocating] = useState(false);
+  const planner = usePlanner();
+  const { state, dispatch } = planner;
   const { height: windowHeight, width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const desktop = width >= 800;
+
+  const [view, setView] = useState<'home' | 'planner'>('home');
+  // 0 keeps the home page over the map; 1 has slid it away to reveal it.
+  const reveal = useSharedValue(0);
+
+  // What a new route is created with, kept on the home screen rather than in
+  // the planner so the map screen has nothing but the route on it.
+  const [activity, setActivity] = useState<Activity>(initialPlannerState.plan.activity);
+  const [mode, setMode] = useState<CreationMode>(initialPlannerState.plan.mode);
+  const [targetKm, setTargetKm] = useState(10);
+
+  const [page, setPage] = useState<SavedRoutePage>();
+  const [pageIndex, setPageIndex] = useState(0);
+  const [reload, setReload] = useState(0);
+  const [loadingRoutes, setLoadingRoutes] = useState(true);
+  const [routesError, setRoutesError] = useState<string>();
+
+  /** The library entry the open route came from, so saving updates it. */
+  const [editing, setEditing] = useState<{ id: string; createdAt: number; name: string }>();
+  const [baseline, setBaseline] = useState('');
+  const [dialog, setDialog] = useState<'save' | 'discard'>();
+  const [nameDraft, setNameDraft] = useState('');
+  const [saving, setSaving] = useState(false);
+  /** An unsaved route recovered from the last run, offered once on the home page. */
+  const [draft, setDraft] = useState(false);
+  const checkedDraft = useRef(false);
+
   // Roughly how much of the map the sheet covers, used both to fit routes clear
   // of it and to centre a located point in the strip that stays visible.
   const sheetInset = useCallback(
@@ -105,352 +99,145 @@ export default function PlannerScreen() {
   // Drives the floating controls so they ride above the sheet as it is dragged.
   // Seeded at the half detent the planner opens on, so nothing jumps on mount.
   const sheetHeight = useSharedValue(windowHeight * SHEET_FRACTION.half);
-  const evidenceRankingRef = useRef(evidenceRanking);
-  const scoringWeightsRef = useRef(scoringWeights);
-  const currentState = useRef(state);
-  const controller = useRef<AbortController | undefined>(undefined);
-  const requestId = useRef(0);
-  currentState.current = state;
 
   useEffect(() => {
-    void restorePlanner().then((saved) => {
-      if (saved) dispatch({ type: 'restore', state: saved });
-      setRestored(true);
-    });
-  }, []);
+    // The desktop panel sits beside the map, so the controls only clear the
+    // safe area rather than tracking a sheet.
+    if (desktop) sheetHeight.value = insets.bottom;
+  }, [desktop, insets.bottom, sheetHeight]);
 
   useEffect(() => {
-    if (!restored) return;
-    const timer = setTimeout(() => void persistPlanner(state), 350);
-    return () => clearTimeout(timer);
-  }, [restored, state]);
+    if (!planner.restored || checkedDraft.current) return;
+    checkedDraft.current = true;
+    if (planner.state.selectedRoute) setDraft(true);
+  }, [planner.restored, planner.state.selectedRoute]);
 
-  const analyze = useCallback(async (result: RouteResult, plan: RoutePlan, signal?: AbortSignal) => {
+  const refresh = useCallback(async (index: number) => {
+    setLoadingRoutes(true);
     try {
-      const attributed = await attributeGeometry(result, plan, signal);
-      return { ...attributed, useEvidence: await routeEvidence(attributed, attributed.edges, signal) };
+      const result = await listRoutes(index * PAGE_SIZE, PAGE_SIZE);
+      setRoutesError(undefined);
+      // Deleting the last route on a page empties it; step back onto the one
+      // before rather than showing nothing.
+      if (!result.items.length && index > 0) setPageIndex(index - 1);
+      else setPage(result);
     } catch (error) {
-      if ((error as Error).name === 'AbortError') throw error;
-      return { ...result, useEvidence: { status: 'unavailable' as const, evidencedDistanceKm: 0, evidencedDistancePct: 0 } };
-    }
-  }, []);
-
-  const calculate = useCallback(async (plan: RoutePlan) => {
-    if (plan.waypoints.length < 2) return;
-    controller.current?.abort();
-    const abort = new AbortController();
-    controller.current = abort;
-    const id = ++requestId.current;
-    dispatch({ type: 'routeStart' });
-    try {
-      const routes = await requestRoute(plan, abort.signal, true);
-      const selected = await analyze(routes[0]!, plan, abort.signal);
-      if (id !== requestId.current) return;
-      const alternatives: RouteAlternative[] = routes.map((result, index) => ({
-        id: `route-${result.id}`,
-        result: index === 0 ? selected : result,
-        label: index === 0 ? 'Suggested route' : 'Alternative from Valhalla',
-      }));
-      dispatch({ type: 'routeSuccess', route: selected, alternatives });
-    } catch (error) {
-      if ((error as Error).name !== 'AbortError' && id === requestId.current)
-        dispatch({ type: 'routeError', error: (error as Error).message });
-    }
-  }, [analyze]);
-
-  const setWaypoints = useCallback((points: Waypoint[], recalculate = true) => {
-    const clean = normalizedWaypoints(points);
-    dispatch({ type: 'waypoints', waypoints: clean });
-    if (recalculate && clean.length >= 2) void calculate(routePlan(currentState.current, clean));
-  }, [calculate]);
-
-  /** Drops the current route and stops any routing still running against the
-   * points it was built from. */
-  const discardRoute = useCallback(() => {
-    controller.current?.abort();
-    requestId.current++;
-    dispatch({ type: 'alternatives', alternatives: [] });
-  }, []);
-
-  /**
-   * Reroutes a loop through the points it now has. Used for every hand edit, so
-   * tuning a generated loop never throws the shape away and starts over.
-   */
-  const routeLoop = useCallback((points: Waypoint[]) => {
-    const current = currentState.current;
-    if (points.length < 2) {
-      dispatch({ type: 'waypoints', waypoints: points });
-      discardRoute();
-      return;
-    }
-    const closed = closedLoop(points);
-    dispatch({ type: 'waypoints', waypoints: closed });
-    dispatch({ type: 'loopTuned', tuned: true });
-    void calculate({ ...current.plan, waypoints: closed });
-  }, [calculate, discardRoute]);
-
-  const mapPress = useCallback((coordinate: Coordinate) => {
-    const current = currentState.current;
-    if (current.interaction === 'inspect') return;
-    const points = current.plan.waypoints;
-    if (current.plan.mode === 'loop') {
-      const loop = editableWaypoints(current);
-      if (!loop.length) {
-        dispatch({ type: 'waypoints', waypoints: [waypoint(coordinate, 'start')] });
-        dispatch({ type: 'tool', tool: 'add' });
-        discardRoute();
-        return;
-      }
-      if (current.activeTool === 'start') {
-        const next = [waypoint(coordinate, 'start'), ...loop.slice(1)];
-        if (current.selectedRoute) routeLoop(next);
-        else {
-          dispatch({ type: 'waypoints', waypoints: next });
-          discardRoute();
-        }
-        return;
-      }
-      if (!current.selectedRoute) {
-        dispatch({ type: 'waypoints', waypoints: [...loop, waypoint(coordinate, 'via')] });
-        discardRoute();
-        return;
-      }
-      // Slot the new point into the leg it was tapped beside, the same way the
-      // A to B add tool does, instead of tacking it onto the end.
-      const segment = closestSegment(current.selectedRoute.geometry, coordinate);
-      const leg = current.selectedRoute.legs.findIndex((item) => segment <= item.endIndex);
-      const insertion = leg >= 0 ? Math.min(leg + 1, loop.length) : loop.length;
-      routeLoop([...loop.slice(0, insertion), waypoint(coordinate, 'via'), ...loop.slice(insertion)]);
-      return;
-    }
-    if (current.activeTool === 'add' && current.selectedRoute) {
-      const segment = closestSegment(current.selectedRoute.geometry, coordinate);
-      const leg = current.selectedRoute.legs.findIndex((item) => segment <= item.endIndex);
-      const insertion = leg >= 0 ? leg + 1 : points.length - 1;
-      setWaypoints([...points.slice(0, insertion), waypoint(coordinate, 'via'), ...points.slice(insertion)]);
-      return;
-    }
-    if (current.plan.mode === 'sketch') {
-      if (current.sketchCompleted) return;
-      if (!points.length) setWaypoints([waypoint(coordinate, 'start')], false);
-      else if (points.length === 1) setWaypoints([...points, waypoint(coordinate, 'destination')]);
-      else setWaypoints([...points.slice(0, -1), { ...points.at(-1)!, role: 'via' }, waypoint(coordinate, 'destination')]);
-      return;
-    }
-    if (current.activeTool === 'start') {
-      const next = points.length ? [waypoint(coordinate, 'start'), ...points.slice(1)] : [waypoint(coordinate, 'start')];
-      setWaypoints(next, next.length >= 2);
-      dispatch({ type: 'tool', tool: 'destination' });
-    } else if (current.activeTool === 'destination') {
-      const next = points.length > 1 ? [points[0]!, ...points.slice(1, -1), waypoint(coordinate, 'destination')] : [...points, waypoint(coordinate, 'destination')];
-      setWaypoints(next);
-    }
-  }, [discardRoute, routeLoop, setWaypoints]);
-
-  const waypointPress = useCallback((id: string) => {
-    const current = currentState.current;
-    if (current.interaction === 'inspect') return;
-    if (current.plan.mode !== 'sketch' || current.sketchCompleted) return;
-    const points = current.plan.waypoints;
-    const first = points[0];
-    const last = points.at(-1);
-    if (!first || !last || !points.some((point) => distanceKm(first.coordinate, point.coordinate) >= 0.001)) return;
-    if (id === last.id) dispatch({ type: 'finishSketch' });
-    else if (id === first.id) {
-      setWaypoints([...points.slice(0, -1), { ...last, role: 'via' }, waypoint(first.coordinate, 'destination')]);
-      dispatch({ type: 'finishSketch' });
-    }
-  }, [setWaypoints]);
-
-  const generate = useCallback(async (override?: RoutePlan) => {
-    const current = currentState.current;
-    const plan = override ?? current.plan;
-    const start = plan.waypoints[0]?.coordinate;
-    const target = plan.targetDistanceKm ?? 10;
-    if (!start || target < 1) return;
-    controller.current?.abort();
-    const abort = new AbortController();
-    controller.current = abort;
-    const id = ++requestId.current;
-    dispatch({ type: 'routeStart', progress: 'Trying 12 loop shapes…' });
-    // Generating replaces the shape wholesale, so the planner is no longer
-    // tuning the one that was on screen.
-    dispatch({ type: 'loopTuned', tuned: false });
-    const seeds = loopSeeds(start, target, current.loopSeed, loopAnchors(plan.waypoints));
-    const basePlan = { ...plan, mode: 'loop' as const };
-    try {
-      const initial = await pool(seeds, LOOP_LIMITS.maxConcurrent, async (seed, index) => {
-        if (abort.signal.aborted) throw Object.assign(new Error('Aborted'), { name: 'AbortError' });
-        dispatch({ type: 'progress', progress: `Trying loop shapes… ${index + 1}/12` });
-        const [result] = await requestRoute({ ...basePlan, waypoints: seed.waypoints }, abort.signal, false);
-        return { seed, result: result! };
-      });
-      let viable = initial.flatMap((item) => item.status === 'fulfilled' ? [item.value] : []).filter((item) =>
-        Math.abs(item.result.distanceKm - target) / target <= LOOP_LIMITS.maxDistanceError &&
-        repeatedCoverage(item.result.geometry) <= LOOP_LIMITS.maxRepeatedCoverage &&
-        !hasDisconnectedJump(item.result.geometry, target),
-      );
-      viable = viable.sort((a, b) => scoreRoute(b.result, target, [], false, scoringWeightsRef.current).score - scoreRoute(a.result, target, [], false, scoringWeightsRef.current).score).slice(0, target > 20 ? 6 : target > 10 ? 8 : viable.length);
-      dispatch({ type: 'progress', progress: `Refining ${viable.length} promising loops…` });
-      const refined = await pool(viable, LOOP_LIMITS.maxConcurrent, async ({ seed, result }) => {
-        if (Math.abs(result.distanceKm - target) / target <= 0.03) return { seed, result };
-        const factor = Math.max(LOOP_LIMITS.refinementMin, Math.min(LOOP_LIMITS.refinementMax, target / result.distanceKm));
-        const adjusted = scaleLoop(seed, start, factor);
-        const [route] = await requestRoute({ ...basePlan, waypoints: adjusted.waypoints }, abort.signal, false);
-        return { seed: adjusted, result: route! };
-      });
-      viable = refined.flatMap((item) => item.status === 'fulfilled' ? [item.value] : []).filter((item) =>
-        Math.abs(item.result.distanceKm - target) / target <= LOOP_LIMITS.maxDistanceError &&
-        repeatedCoverage(item.result.geometry) <= LOOP_LIMITS.maxRepeatedCoverage &&
-        !hasDisconnectedJump(item.result.geometry, target),
-      );
-      const shortlist = viable.sort((a, b) => scoreRoute(b.result, target, [], false, scoringWeightsRef.current).score - scoreRoute(a.result, target, [], false, scoringWeightsRef.current).score).slice(0, 6);
-      dispatch({ type: 'progress', progress: 'Checking route surfaces and issues…' });
-      const attributed = await pool(shortlist, LOOP_LIMITS.maxConcurrent, async (item) => ({ ...item, result: await attributeGeometry(item.result, basePlan, abort.signal) }));
-      const attributedRoutes = attributed.flatMap((item) => item.status === 'fulfilled' ? [item.value] : []);
-      dispatch({ type: 'progress', progress: 'Checking route-use evidence…' });
-      const evidence = await routeEvidenceBatch(attributedRoutes.map((item) => ({ id: item.result.id, route: item.result, edges: item.result.edges })), abort.signal);
-      const ranked = attributedRoutes.map((item) => ({ ...item, result: { ...item.result, useEvidence: evidence.get(item.result.id) } })).map((item) => ({ ...item, metrics: scoreRoute(item.result, target, item.result.issues, evidenceRankingRef.current, scoringWeightsRef.current) })).sort((a, b) => b.metrics.score - a.metrics.score);
-      const distinct: typeof ranked = [];
-      for (const item of ranked) {
-        if (distinct.every((other) => routeSimilarity(item.result.geometry, other.result.geometry) <= LOOP_LIMITS.dedupeSimilarity)) distinct.push(item);
-        if (distinct.length === 3) break;
-      }
-      if (id !== requestId.current) return;
-      if (!distinct.length) throw new Error('No useful loops survived around this start. Try a different distance, preference, or start point.');
-      const alternatives: RouteAlternative[] = distinct.map((item) => ({ id: item.seed.id, result: item.result, metrics: item.metrics, waypoints: item.seed.waypoints, label: loopLabel(item.result, item.metrics) }));
-      dispatch({ type: 'waypoints', waypoints: alternatives[0]!.waypoints! });
-      dispatch({ type: 'alternatives', alternatives });
-      if (distinct.length < 3) dispatch({ type: 'routeError', error: `Found ${distinct.length} distinct loop${distinct.length === 1 ? '' : 's'}; the local network shape limited generation.` });
-    } catch (error) {
-      if ((error as Error).name !== 'AbortError' && id === requestId.current) dispatch({ type: 'routeError', error: (error as Error).message });
-    }
-  }, []);
-
-  function rerank(enabled: boolean, weights: LoopScoringWeights) {
-    evidenceRankingRef.current = enabled;
-    scoringWeightsRef.current = weights;
-    setEvidenceRanking(enabled);
-    setScoringWeights(weights);
-    const current = currentState.current;
-    if (current.plan.mode !== 'loop' || !current.alternatives.length) return;
-    const target = current.plan.targetDistanceKm ?? 10;
-    const alternatives = current.alternatives.map((item) => {
-      const metrics = scoreRoute(item.result, target, item.result.issues, enabled, weights);
-      return { ...item, metrics, label: loopLabel(item.result, metrics) };
-    }).sort((a, b) => (b.metrics?.score ?? 0) - (a.metrics?.score ?? 0));
-    dispatch({ type: 'alternatives', alternatives, preserveSelection: true });
-  }
-
-  function rerouteWith(next: Partial<RoutePlan>) {
-    const current = currentState.current;
-    controller.current?.abort();
-    requestId.current++;
-    const plan = { ...current.plan, ...next };
-    // A loop being tuned by hand is rerouted through its own points; only an
-    // untouched one is regenerated from fresh shapes.
-    if (plan.mode === 'loop' && plan.waypoints.length && !current.loopTuned) {
-      void generate(plan);
-      return;
-    }
-    if (plan.waypoints.length >= 2) void calculate(plan);
-  }
-
-  function selectAlternative(id: string) {
-    const alternative = state.alternatives.find((item) => item.id === id);
-    if (!alternative) return;
-    dispatch({ type: 'selectRoute', route: alternative.result });
-    if (alternative.waypoints) {
-      dispatch({ type: 'waypoints', waypoints: alternative.waypoints });
-      dispatch({ type: 'loopTuned', tuned: false });
-    }
-    if (!alternative.result.edges.length) void analyze(alternative.result, routePlan(currentState.current)).then((result) => {
-      if (currentState.current.selectedRoute?.id === result.id) dispatch({ type: 'selectRoute', route: result });
-    });
-  }
-
-  /** Applies a marker drag. A dragged loop shaping point becomes a deliberate
-   * one, so regenerating later keeps it. */
-  const moveWaypoint = useCallback((id: string, coordinate: Coordinate) => {
-    const current = currentState.current;
-    const points = current.plan.waypoints.map((point) =>
-      point.id === id
-        ? { ...point, coordinate, role: point.role === 'generated' ? ('via' as const) : point.role }
-        : point,
-    );
-    if (current.plan.mode === 'loop') routeLoop(openLoop(points));
-    else setWaypoints(points);
-  }, [routeLoop, setWaypoints]);
-
-  /** Replaces the start without disturbing the rest of the plan, whichever mode
-   * the planner is in. */
-  const startAt = useCallback((coordinate: Coordinate) => {
-    const current = currentState.current;
-    if (current.plan.mode === 'loop') {
-      const loop = editableWaypoints(current);
-      const next = [waypoint(coordinate, 'start'), ...loop.slice(1)];
-      dispatch({ type: 'tool', tool: 'add' });
-      if (current.selectedRoute) routeLoop(next);
-      else {
-        dispatch({ type: 'waypoints', waypoints: next });
-        discardRoute();
-      }
-      return;
-    }
-    const points = current.plan.waypoints;
-    const next = points.length
-      ? [waypoint(coordinate, 'start'), ...points.slice(1)]
-      : [waypoint(coordinate, 'start')];
-    setWaypoints(next, next.length >= 2);
-    if (current.plan.mode === 'pointToPoint' && next.length < 2)
-      dispatch({ type: 'tool', tool: 'destination' });
-  }, [discardRoute, routeLoop, setWaypoints]);
-
-  /** Replaces the editable points after a reorder or removal in the sheet. */
-  const editWaypoints = useCallback((points: Waypoint[]) => {
-    const current = currentState.current;
-    if (current.plan.mode !== 'loop') {
-      setWaypoints(points);
-      // A single point can no longer describe a route, so drop the stale one.
-      if (points.length < 2) discardRoute();
-      return;
-    }
-    if (current.selectedRoute) {
-      routeLoop(points);
-      return;
-    }
-    dispatch({ type: 'waypoints', waypoints: points });
-    discardRoute();
-  }, [discardRoute, routeLoop, setWaypoints]);
-
-  const setSheet = useCallback((sheet: PlannerState['sheet']) => {
-    dispatch({ type: 'sheet', sheet });
-  }, []);
-
-  async function locate() {
-    setLocating(true);
-    try {
-      const permission = await Location.requestForegroundPermissionsAsync();
-      if (!permission.granted) {
-        dispatch({ type: 'routeError', error: 'Location permission was unavailable or denied. Choose a start on the map instead.' });
-        return;
-      }
-      const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-      const coordinate = { lat: position.coords.latitude, lon: position.coords.longitude };
-      // A full sheet leaves too little map to show where the planner is, so it
-      // steps back to half and the camera is centred for that.
-      const sheet = currentState.current.sheet === 'full' ? 'half' : currentState.current.sheet;
-      if (sheet !== currentState.current.sheet) dispatch({ type: 'sheet', sheet });
-      dispatch({ type: 'camera', center: coordinate, zoom: 15 });
-      startAt(coordinate);
-    } catch (error) {
-      dispatch({ type: 'routeError', error: `Your location is unavailable (${(error as Error).message}). Choose a start on the map instead.` });
+      setRoutesError(`Saved routes are unavailable on this device (${(error as Error).message}).`);
     } finally {
-      setLocating(false);
+      setLoadingRoutes(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh(pageIndex);
+  }, [pageIndex, refresh, reload]);
+
+  const enterPlanner = useCallback(() => {
+    setView('planner');
+    reveal.value = withTiming(1, OPEN);
+  }, [reveal]);
+
+  const leavePlanner = useCallback(() => {
+    setDialog(undefined);
+    setView('home');
+    reveal.value = withTiming(0, CLOSE);
+  }, [reveal]);
+
+  function createRoute() {
+    planner.startNew(activity, mode, targetKm);
+    setEditing(undefined);
+    setDraft(false);
+    setBaseline(
+      signature({ ...initialPlannerState.plan, activity, mode, targetDistanceKm: targetKm }),
+    );
+    enterPlanner();
+  }
+
+  function resumeDraft() {
+    setEditing(undefined);
+    setDraft(false);
+    // A recovered route was never saved, so leaving it must still ask.
+    setBaseline('');
+    enterPlanner();
+  }
+
+  async function openRoute(id: string, interaction: InteractionMode) {
+    try {
+      const saved = await loadRoute(id);
+      if (!saved) {
+        setRoutesError('That route is no longer saved on this device.');
+        setReload((value) => value + 1);
+        return;
+      }
+      setEditing({ id: saved.id, createdAt: saved.createdAt, name: saved.name });
+      setBaseline(signature(saved.plan, saved.route.id));
+      setDraft(false);
+      setActivity(saved.plan.activity);
+      setMode(saved.plan.mode);
+      if (saved.plan.targetDistanceKm) setTargetKm(saved.plan.targetDistanceKm);
+      planner.openSaved(saved, interaction);
+      enterPlanner();
+    } catch (error) {
+      setRoutesError(`That route could not be opened (${(error as Error).message}).`);
     }
   }
 
-  const highlightedIssue = state.selectedRoute?.issues.find((issue) => issue.id === state.highlightedIssueId);
+  async function removeRoute(id: string) {
+    try {
+      await deleteRoute(id);
+      if (editing?.id === id) setEditing(undefined);
+      setReload((value) => value + 1);
+    } catch (error) {
+      setRoutesError(`That route could not be deleted (${(error as Error).message}).`);
+    }
+  }
+
+  function beginSave() {
+    if (!state.selectedRoute) return;
+    setNameDraft(editing?.name ?? suggestedName(state.plan, state.selectedRoute));
+    setDialog('save');
+  }
+
+  async function commitSave() {
+    const route = state.selectedRoute;
+    if (!route) return;
+    setSaving(true);
+    try {
+      const record = savedRoute(nameDraft, state.plan, route, editing);
+      await putRoute(record);
+      setEditing({ id: record.id, createdAt: record.createdAt, name: record.name });
+      setBaseline(signature(state.plan, route.id));
+      setPageIndex(0);
+      setReload((value) => value + 1);
+      leavePlanner();
+    } catch (error) {
+      setDialog(undefined);
+      dispatch({ type: 'routeError', error: `This route could not be saved (${(error as Error).message}).` });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const dirty = signature(state.plan, state.selectedRoute?.id) !== baseline;
+
+  function requestBack() {
+    if (dirty && (state.selectedRoute || state.plan.waypoints.length)) {
+      setDialog('discard');
+      return;
+    }
+    discard();
+  }
+
+  function discard() {
+    planner.clear();
+    setEditing(undefined);
+    setDraft(false);
+    leavePlanner();
+  }
+
+  const highlightedIssue = state.selectedRoute?.issues.find(
+    (issue) => issue.id === state.highlightedIssueId,
+  );
   const overlay = useMemo(
     () =>
       state.selectedRoute
@@ -467,11 +254,15 @@ export default function PlannerScreen() {
     [overlay.bands, state.selectedRoute],
   );
 
-  useEffect(() => {
-    // The desktop panel sits beside the map, so the controls only clear the
-    // safe area rather than tracking a sheet.
-    if (desktop) sheetHeight.value = insets.bottom;
-  }, [desktop, insets.bottom, sheetHeight]);
+  // The map never unmounts, so opening a route slides the home page down off it
+  // rather than loading a screen with a second map on it.
+  const homeStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: reveal.value * windowHeight }],
+  }));
+  const plannerStyle = useAnimatedStyle(() => ({
+    opacity: reveal.value,
+    transform: [{ translateY: (1 - reveal.value) * 20 }],
+  }));
 
   return (
     <View style={styles.root}>
@@ -482,85 +273,167 @@ export default function PlannerScreen() {
         showIssues={state.overlay === 'route'}
         camera={state.camera}
         mapStyle={state.mapStyle}
-        bottomInset={bottomInset}
+        bottomInset={view === 'planner' ? bottomInset : 0}
         waypoints={state.plan.waypoints}
         route={state.selectedRoute}
-        fitRequest={fitRequest}
+        fitRequest={planner.fitRequest}
         alternatives={state.alternatives}
         highlightedIssue={highlightedIssue}
         profilePoint={state.profilePoint}
-        onMapPress={mapPress}
-        onWaypointPress={waypointPress}
-        onWaypointMove={moveWaypoint}
+        onMapPress={planner.mapPress}
+        onWaypointPress={planner.waypointPress}
+        onWaypointMove={planner.moveWaypoint}
         onIssuePress={(id) => dispatch({ type: 'highlightIssue', id })}
         onEdgePress={(index) => dispatch({ type: 'highlightEdge', index })}
-        onAlternativePress={selectAlternative}
+        onAlternativePress={planner.selectAlternative}
         onCameraChange={(center, zoom) => dispatch({ type: 'camera', center, zoom })}
       />
-      <View pointerEvents="none" style={[styles.brandPill, { top: insets.top + 8 }]}>
-        <Text style={styles.brand}>OPENLOOPER</Text>
+
+      <Animated.View
+        style={[StyleSheet.absoluteFill, styles.plannerLayer, plannerStyle]}
+        pointerEvents={view === 'planner' ? 'box-none' : 'none'}
+        // Both layers stay mounted so the map is never rebuilt, so the one that
+        // is not on screen has to be taken out of the accessibility tree too.
+        aria-hidden={view !== 'planner'}
+        accessibilityElementsHidden={view !== 'planner'}
+        importantForAccessibility={view === 'planner' ? 'auto' : 'no-hide-descendants'}
+      >
+        <RouteBar
+          top={insets.top + 8}
+          accent={ACTIVITY[state.plan.activity].color}
+          name={editing?.name}
+          canSave={Boolean(state.selectedRoute)}
+          saving={saving}
+          onBack={requestBack}
+          onSave={beginSave}
+        />
+        <MapControls
+          accent={ACTIVITY[state.plan.activity].color}
+          mapStyle={state.mapStyle}
+          offset={sheetHeight}
+          gap={14}
+          fadeAt={windowHeight * SHEET_FRACTION.full}
+          overlay={state.overlay}
+          onOverlay={(value) => dispatch({ type: 'overlay', overlay: value })}
+          locating={planner.locating}
+          hasRoute={Boolean(state.selectedRoute)}
+          interaction={state.interaction}
+          onInteraction={(interaction) => dispatch({ type: 'interaction', interaction })}
+          onMapStyle={(style) => dispatch({ type: 'mapStyle', style })}
+          onLocate={() => void planner.locate()}
+          onFitRoute={planner.fitRoute}
+        />
+        <PlannerSheet
+          state={state}
+          sheetHeight={sheetHeight}
+          scoringWeights={planner.scoringWeights}
+          evidenceRanking={planner.evidenceRanking}
+          onEvidenceRanking={(enabled) => planner.rerank(enabled, planner.scoringWeights)}
+          onScoringWeights={(weights) => planner.rerank(planner.evidenceRanking, weights)}
+          onPreferences={(preferences) => {
+            dispatch({ type: 'preferences', preferences });
+            planner.rerouteWith({ preferences });
+          }}
+          onTool={(tool) => dispatch({ type: 'tool', tool })}
+          onTarget={(distanceKm) => dispatch({ type: 'target', distanceKm })}
+          onGenerate={() => void planner.generate()}
+          onRegenerate={() => {
+            dispatch({ type: 'loopSeed' });
+            setTimeout(() => void planner.generate(), 0);
+          }}
+          onCancel={planner.cancel}
+          onSelectAlternative={planner.selectAlternative}
+          onReverse={() => planner.setWaypoints([...state.plan.waypoints].reverse())}
+          onWaypoints={planner.editWaypoints}
+          onClear={planner.clear}
+          onIssue={(issue) => dispatch({ type: 'highlightIssue', id: issue.id })}
+          onEdgeDismiss={() => dispatch({ type: 'highlightEdge' })}
+          onProfile={(coordinate) => dispatch({ type: 'profilePoint', coordinate })}
+          onSheet={(sheet) => dispatch({ type: 'sheet', sheet })}
+          series={series}
+          spans={spans}
+          legend={overlay.legend}
+          overlayUnavailable={overlay.unavailable}
+          onSearchSelect={(coordinate) => {
+            dispatch({ type: 'camera', center: coordinate, zoom: 15 });
+            planner.startAt(coordinate);
+          }}
+          onFocusPoint={(coordinate) =>
+            dispatch({ type: 'camera', center: coordinate, zoom: Math.max(15, state.camera.zoom) })
+          }
+          onExport={() => {
+            if (!state.selectedRoute) return;
+            void exportGpx(state.selectedRoute, state.plan.activity).catch((error) =>
+              dispatch({ type: 'routeError', error: (error as Error).message }),
+            );
+          }}
+        />
+      </Animated.View>
+
+      <Animated.View
+        style={[StyleSheet.absoluteFill, styles.homeLayer, homeStyle]}
+        pointerEvents={view === 'home' ? 'auto' : 'none'}
+        aria-hidden={view !== 'home'}
+        accessibilityElementsHidden={view !== 'home'}
+        importantForAccessibility={view === 'home' ? 'auto' : 'no-hide-descendants'}
+      >
+        <HomeScreen
+          activity={activity}
+          mode={mode}
+          targetKm={targetKm}
+          onActivity={setActivity}
+          onMode={setMode}
+          onTarget={setTargetKm}
+          onCreate={createRoute}
+          onResume={draft ? resumeDraft : undefined}
+          page={page}
+          pageIndex={pageIndex}
+          pageSize={PAGE_SIZE}
+          loading={loadingRoutes}
+          error={routesError}
+          onPage={setPageIndex}
+          onOpen={(id, interaction) => void openRoute(id, interaction)}
+          onDelete={(id) => void removeRoute(id)}
+        />
+      </Animated.View>
+
+      <View style={styles.dialogLayer} pointerEvents={dialog ? 'auto' : 'none'}>
+        {dialog === 'save' && (
+          <Dialog
+            title="Save this route"
+            message="Saved routes stay on this device."
+            value={nameDraft}
+            placeholder="Route name"
+            onChange={setNameDraft}
+            confirmLabel="Save"
+            onConfirm={() => void commitSave()}
+            onCancel={() => setDialog(undefined)}
+            accent={ACTIVITY[state.plan.activity].color}
+            busy={saving}
+          />
+        )}
+        {dialog === 'discard' && (
+          <Dialog
+            title="Leave without saving?"
+            message="This route has changes that are not in your saved routes."
+            confirmLabel="Discard"
+            cancelLabel="Keep editing"
+            onConfirm={discard}
+            onCancel={() => setDialog(undefined)}
+            accent={ACTIVITY[state.plan.activity].color}
+          />
+        )}
       </View>
-      <MapControls
-        accent={ACTIVITY[state.plan.activity].color}
-        mapStyle={state.mapStyle}
-        offset={sheetHeight}
-        gap={14}
-        fadeAt={windowHeight * SHEET_FRACTION.full}
-        overlay={state.overlay}
-        onOverlay={(value) => dispatch({ type: 'overlay', overlay: value })}
-        locating={locating}
-        hasRoute={Boolean(state.selectedRoute)}
-        interaction={state.interaction}
-        onInteraction={(interaction) => dispatch({ type: 'interaction', interaction })}
-        onMapStyle={(style) => dispatch({ type: 'mapStyle', style })}
-        onLocate={() => void locate()}
-        onFitRoute={() => setFitRequest((value) => value + 1)}
-      />
-      <PlannerSheet
-        state={state}
-        sheetHeight={sheetHeight}
-        scoringWeights={scoringWeights}
-        evidenceRanking={evidenceRanking}
-        onEvidenceRanking={(enabled) => rerank(enabled, scoringWeightsRef.current)}
-        onScoringWeights={(weights) => rerank(evidenceRankingRef.current, weights)}
-        onMode={(mode) => dispatch({ type: 'mode', mode })}
-        onActivity={(activity) => { dispatch({ type: 'activity', activity }); rerouteWith({ activity }); }}
-        onPreferences={(preferences) => { dispatch({ type: 'preferences', preferences }); rerouteWith({ preferences }); }}
-        onTool={(tool) => dispatch({ type: 'tool', tool })}
-        onTarget={(distanceKm) => dispatch({ type: 'target', distanceKm })}
-        onGenerate={() => void generate()}
-        onRegenerate={() => { dispatch({ type: 'loopSeed' }); setTimeout(() => void generate(), 0); }}
-        onCancel={() => { controller.current?.abort(); requestId.current++; dispatch({ type: 'routeError', error: 'Route calculation stopped.' }); }}
-        onSelectAlternative={selectAlternative}
-        onReverse={() => setWaypoints([...state.plan.waypoints].reverse())}
-        onWaypoints={editWaypoints}
-        onClear={() => { controller.current?.abort(); requestId.current++; dispatch({ type: 'clear' }); }}
-        onIssue={(issue) => dispatch({ type: 'highlightIssue', id: issue.id })}
-        onEdgeDismiss={() => dispatch({ type: 'highlightEdge' })}
-        onProfile={(coordinate) => dispatch({ type: 'profilePoint', coordinate })}
-        onSheet={setSheet}
-        series={series}
-        spans={spans}
-        legend={overlay.legend}
-        overlayUnavailable={overlay.unavailable}
-        onSearchSelect={(coordinate) => {
-          dispatch({ type: 'camera', center: coordinate, zoom: 15 });
-          startAt(coordinate);
-        }}
-        onFocusPoint={(coordinate) =>
-          dispatch({ type: 'camera', center: coordinate, zoom: Math.max(15, state.camera.zoom) })
-        }
-        onExport={() => {
-          if (!state.selectedRoute) return;
-          void exportGpx(state.selectedRoute, state.plan.activity).catch((error) => dispatch({ type: 'routeError', error: (error as Error).message }));
-        }}
-      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#e9eee8' },
-  brandPill: { position: 'absolute', right: 16, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, backgroundColor: 'rgba(250,251,247,0.94)', shadowColor: '#172019', shadowOpacity: 0.14, shadowRadius: 14, shadowOffset: { width: 0, height: 5 } },
-  brand: { color: '#172019', fontSize: 11, fontWeight: '900', letterSpacing: 1.5 },
+  // The web map draws its own zoom control into the map element, which carries a
+  // stacking order of its own; both layers are lifted clear of it so the map
+  // never shows controls through the page covering it.
+  plannerLayer: { zIndex: 3 },
+  homeLayer: { zIndex: 4 },
+  dialogLayer: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, zIndex: 5 },
 });

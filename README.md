@@ -20,6 +20,7 @@ The browser app uses OpenFreeMap globally and a local Valhalla instance for rout
 - Debounced restoration of the current map, plan, selected route, analysis, and loop alternatives after refresh.
 - Supported binary route-use evidence summaries and map overlays, prepared offline from current OSM route relations and the 2013 OSM GPS archive.
 - One responsive map/sheet interface for phone, tablet, and desktop widths.
+- Named routes saved on the device, listed with a drawn route card and reopened for viewing or editing. This is in the Expo client only; see `apps/openlooper-native/README.md`.
 
 ## Requirements
 

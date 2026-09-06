@@ -14,7 +14,28 @@ npm run native:check
 
 Or run `npm run android`, `npm run ios`, or `npm run web` from this directory.
 
-The app supports A→B alternatives, waypoint sketching, automatic loop generation, route preferences, draggable editing, local session restoration, location search, device location, elevation, route-quality notes and segment details, route-use evidence ranking, and GPX export/sharing. Development builds also expose loop-scoring sliders. The development evidence map overlay from the original frontend is intentionally not included.
+The app supports A→B alternatives, waypoint sketching, automatic loop generation, route preferences, draggable editing, saved routes, local session restoration, location search, device location, elevation, route-quality notes and segment details, route-use evidence ranking, and GPX export/sharing. Development builds also expose loop-scoring sliders. The development evidence map overlay from the original frontend is intentionally not included.
+
+## The two screens
+
+There is one screen and one map. The home page is drawn over the live map, and starting or opening a route slides that page down to uncover the map already in place, so the map is never torn down and rebuilt between the two.
+
+**Home** chooses the activity, route type and — for a loop — the target distance, then creates the route. Below that is a paginated list of the routes saved on this device, each card drawing the route's own shape beside its distance, time and approximate ascent. **View** opens a route for inspection; **Edit** opens it with the point tools live.
+
+**The map** carries the route and nothing else: back and save sit top left, and the sheet below holds the points, preferences, profile and notes. Activity and route type are settled on the home page and are not repeated there.
+
+## Saved routes
+
+Saving names the route and writes it to the device. Leaving the map with unsaved changes asks first; saving returns to the home page with the list already updated.
+
+A saved route keeps its plan, its line, its elevation and its numbers. Segment attributes and the notes derived from them are not stored — reopening a route fetches them again in the background, the same way choosing an alternative does — so a saved route stays small and never carries stale attribution.
+
+Storage differs by platform, and deliberately:
+
+- **Device.** `expo-sqlite`, in `openlooper-routes.db`. The columns are what the list draws, and the route payload sits beside them in a blob, so a page of cards is one small query.
+- **Web.** The browser's own storage, in the same shape: one index of card data, one entry per route. `expo-sqlite`'s web build reaches its worker through a `SharedArrayBuffer`, which needs the page cross-origin isolated; the COEP header that takes would also block the map tiles, glyphs and MapLibre worker the web map loads from other origins.
+
+Nothing is uploaded. Routes live only on the device that saved them, and clearing the app's data clears them.
 
 ## Talking to the local services
 
@@ -189,5 +210,6 @@ EXPO_PUBLIC_VALHALLA_URL=http://... EXPO_PUBLIC_EVIDENCE_URL=http://... npx eas 
 - `NSLocalNetworkUsageDescription` — iOS 14+ prompts before an app may contact hosts on the local network.
 - `NSLocationWhenInUseUsageDescription`, via the `expo-location` plugin — needed by the **Locate me** control.
 - `expo-build-properties` with `usesCleartextTraffic` — the Android equivalent of the ATS exception.
+- `expo-sqlite` — the saved-route library. It is a native module, so adding it means the existing development build no longer matches: rebuild the dev client once before saved routes work on a device. The web build never loads it and needs no rebuild.
 
 Android additionally needs a Google Maps API key for `react-native-maps`; iOS uses Apple Maps and needs none.
