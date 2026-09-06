@@ -1,6 +1,7 @@
 import Slider from '@react-native-community/slider';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
+  Keyboard,
   Linking,
   Pressable,
   ScrollView,
@@ -15,6 +16,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { SharedValue } from 'react-native-reanimated';
 
 import { DEFAULT_LOOP_SCORING_WEIGHTS } from '../../../../src/domain/route-scoring';
+import type { ColourSpan, LegendEntry } from '../../../../src/domain/route-overlays';
+import type { RouteSeries } from '../../../../src/domain/route-series';
 import { COLOR, RADIUS, SHADOW } from '@/theme';
 import { ACTIVITY, CREATION_MODES } from '@/domain/models';
 import { NOMINATIM_URL } from '@/services/endpoints';
@@ -29,8 +32,9 @@ import type {
 } from '@/domain/models';
 import { editableWaypoints } from '@/domain/waypoints';
 import { DragSheet } from './drag-sheet';
-import { ElevationChart } from './ui/elevation-chart';
+import { Collapsible } from './ui/collapsible';
 import { GlassSurface } from './ui/glass-surface';
+import { ProfileChart } from './ui/profile-chart';
 import { Segmented } from './ui/segmented';
 import { WaypointList } from './ui/waypoint-list';
 import type { WaypointRow } from './ui/types';
@@ -62,6 +66,12 @@ type Props = {
   onSearchSelect: (coordinate: Coordinate) => void;
   /** Centres the map on a point picked from the list. */
   onFocusPoint: (coordinate: Coordinate) => void;
+  /** What the profile chart plots, chosen by the active route colouring. */
+  series: RouteSeries;
+  /** The same colouring the map drew, laid out along the distance axis. */
+  spans: ColourSpan[];
+  legend: LegendEntry[];
+  overlayUnavailable?: string;
   onExport: () => void;
 };
 
@@ -88,7 +98,14 @@ export function PlannerSheet(props: Props) {
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const desktop = width >= 800;
+  const editing = state.interaction === 'edit';
   const accent = ACTIVITY[state.plan.activity].color;
+
+  // Dragging the sheet with the keyboard up otherwise leaves it stranded over
+  // whatever the sheet slid to.
+  useEffect(() => {
+    Keyboard.dismiss();
+  }, [state.sheet]);
 
   function search() {
     const value = query.trim();
@@ -136,6 +153,7 @@ export function PlannerSheet(props: Props) {
     <ScrollView
       contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 28 }]}
       keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="on-drag"
       showsVerticalScrollIndicator={false}
     >
       <View style={styles.searchRow}>
@@ -183,7 +201,7 @@ export function PlannerSheet(props: Props) {
         onChange={props.onMode}
       />
 
-      {state.plan.mode === 'pointToPoint' && (
+      {editing && state.plan.mode === 'pointToPoint' && (
         <Segmented
           accessibilityLabel="Map tap places"
           values={POINT_TOOLS}
@@ -192,7 +210,7 @@ export function PlannerSheet(props: Props) {
           onChange={props.onTool}
         />
       )}
-      {state.plan.mode === 'loop' && !!state.plan.waypoints.length && (
+      {editing && state.plan.mode === 'loop' && !!state.plan.waypoints.length && (
         <Segmented
           accessibilityLabel="Map tap places"
           values={LOOP_TOOLS}
@@ -201,7 +219,7 @@ export function PlannerSheet(props: Props) {
           onChange={props.onTool}
         />
       )}
-      {state.plan.mode === 'sketch' && state.sketchCompleted && (
+      {editing && state.plan.mode === 'sketch' && state.sketchCompleted && (
         <ChoiceButton
           selected={state.activeTool === 'add'}
           accent={accent}
@@ -214,16 +232,7 @@ export function PlannerSheet(props: Props) {
         <View style={styles.panel}>
           <View style={styles.fieldRow}>
             <Text style={styles.label}>Target distance</Text>
-            <View style={styles.distanceWrap}>
-              <TextInput
-                value={String(state.plan.targetDistanceKm ?? 10)}
-                onChangeText={(value) => props.onTarget(Number(value))}
-                keyboardType="decimal-pad"
-                style={styles.distanceInput}
-                accessibilityLabel="Target distance in kilometres"
-              />
-              <Text style={styles.muted}>km</Text>
-            </View>
+            <DistanceField value={state.plan.targetDistanceKm ?? 10} onChange={props.onTarget} />
           </View>
           <PrimaryButton
             accent={accent}
@@ -246,7 +255,11 @@ export function PlannerSheet(props: Props) {
         <Preferences {...props} accent={accent} />
       </View>
 
-      {__DEV__ && <DeveloperSettings {...props} accent={accent} />}
+      {__DEV__ && (
+        <Collapsible title="Development · loop scoring" tone="dev">
+          <DeveloperSettings {...props} accent={accent} />
+        </Collapsible>
+      )}
 
       {state.loading && (
         <Notice text={state.progress ?? 'Calculating route…'} action="Stop" onAction={props.onCancel} />
@@ -311,15 +324,23 @@ export function PlannerSheet(props: Props) {
           </View>
 
           <View style={styles.panel}>
-            <Text style={styles.sectionTitle}>Elevation</Text>
-            {state.selectedRoute.elevation.length ? (
-              <ElevationChart
-                points={state.selectedRoute.elevation}
+            <Text style={styles.sectionTitle}>{props.series.label} over distance</Text>
+            {props.series.points.length ? (
+              <ProfileChart
+                series={props.series}
+                spans={props.spans}
+                totalKm={state.selectedRoute.distanceKm}
+                legend={props.legend}
                 accent={accent}
                 onPoint={props.onProfile}
               />
             ) : (
-              <Text style={styles.hint}>Elevation is unavailable for this route.</Text>
+              <Text style={styles.hint}>
+                {props.series.label} is unavailable for this route.
+              </Text>
+            )}
+            {!!props.overlayUnavailable && (
+              <Text style={styles.hint}>{props.overlayUnavailable}</Text>
             )}
           </View>
 
@@ -331,8 +352,15 @@ export function PlannerSheet(props: Props) {
               />
             )}
 
-          <View style={styles.panel}>
-            <Text style={styles.sectionTitle}>Route notes · {state.selectedRoute.issues.length}</Text>
+          <Collapsible
+            title="Route notes"
+            forceOpen={!!state.highlightedIssueId}
+            badge={
+              !state.selectedRoute.edges.length
+                ? 'attribution unavailable'
+                : `${state.selectedRoute.issues.length} noted`
+            }
+          >
             {!state.selectedRoute.edges.length ? (
               <Text style={styles.hint}>
                 Route-quality attribution is unavailable. Routing and elevation remain usable.
@@ -356,7 +384,7 @@ export function PlannerSheet(props: Props) {
               Based on normalized route data. Not a guarantee of safety, accessibility, surface
               condition, traffic, lighting, or current hazards.
             </Text>
-          </View>
+          </Collapsible>
         </>
       )}
     </ScrollView>
@@ -422,6 +450,7 @@ function Peek({
 
 function PointsPanel(props: Props & { accent: string }) {
   const { state, accent } = props;
+  const editable = state.interaction === 'edit';
   const points = editableWaypoints(state);
   if (!points.length) return null;
   const loop = state.plan.mode === 'loop';
@@ -462,14 +491,17 @@ function PointsPanel(props: Props & { accent: string }) {
     <View style={styles.panel}>
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>Points · {points.length}</Text>
-        <View style={styles.buttonRow}>
-          {!loop && points.length > 1 && <SmallButton label="Reverse" onPress={props.onReverse} />}
-          <SmallButton label="Clear" onPress={props.onClear} />
-        </View>
+        {editable && (
+          <View style={styles.buttonRow}>
+            {!loop && points.length > 1 && <SmallButton label="Reverse" onPress={props.onReverse} />}
+            <SmallButton label="Clear" onPress={props.onClear} />
+          </View>
+        )}
       </View>
       <WaypointList
         rows={rows}
         accent={accent}
+        editable={editable}
         onMove={move}
         onDelete={remove}
         onSelect={(id) => {
@@ -477,11 +509,13 @@ function PointsPanel(props: Props & { accent: string }) {
           if (point) props.onFocusPoint(point.coordinate);
         }}
       />
-      <Text style={styles.disclaimer}>
-        {loop
-          ? 'Reorder or remove loop points here, then generate again to reroute.'
-          : 'Reorder or remove points here. The route recalculates as you edit.'}
-      </Text>
+      {editable && (
+        <Text style={styles.disclaimer}>
+          {loop
+            ? 'Reorder, remove or drag loop points; the loop reroutes through them as you tune it.'
+            : 'Reorder or remove points here. The route recalculates as you edit.'}
+        </Text>
+      )}
     </View>
   );
 }
@@ -535,18 +569,23 @@ function Preferences(props: Props & { accent: string }) {
 }
 
 function hint(state: PlannerState) {
+  if (state.interaction === 'inspect')
+    return 'Inspecting. Tap the route for segment details, or switch back to editing to change it.';
   if (state.plan.mode === 'sketch')
     return state.sketchCompleted
       ? 'Sketch complete. Add or drag points to edit the routed shape.'
       : state.plan.waypoints.length < 2
         ? 'Tap the map to place a start and endpoint.'
         : 'Keep tapping to extend. Tap A to close or the endpoint to finish.';
-  if (state.plan.mode === 'loop')
-    return !state.plan.waypoints.length
-      ? 'Choose a start on the map, then generate up to three distinct routes.'
-      : state.activeTool === 'add'
-        ? 'Tap the map to add loop points the route must pass through, then generate.'
-        : 'Tap the map to move the start, then generate up to three distinct routes.';
+  if (state.plan.mode === 'loop') {
+    if (!state.plan.waypoints.length)
+      return 'Choose a start on the map, then generate up to three distinct routes.';
+    if (state.loopTuned)
+      return 'Tuning this loop. Drag, add or reorder points and it reroutes through them; generate again for a fresh shape.';
+    return state.activeTool === 'add'
+      ? 'Tap the map to add loop points the route must pass through, then generate.'
+      : 'Tap the map to move the start, then generate up to three distinct routes.';
+  }
   return 'Select a tool, tap the map, or drag any point to edit.';
 }
 
@@ -559,8 +598,7 @@ function DeveloperSettings(props: Props & { accent: string }) {
     { key: 'evidence', label: 'Evidence bonus', max: 15 },
   ];
   return (
-    <View style={styles.devPanel}>
-      <Text style={styles.sectionTitle}>Development · loop scoring</Text>
+    <>
       <Toggle
         label="Rank candidates with route-use evidence"
         value={props.evidenceRanking}
@@ -584,6 +622,36 @@ function DeveloperSettings(props: Props & { accent: string }) {
         </View>
       ))}
       <SmallButton label="Reset defaults" onPress={() => props.onScoringWeights(DEFAULT_LOOP_SCORING_WEIGHTS)} />
+    </>
+  );
+}
+
+/**
+ * Keeps its own text while the planner types, so clearing the field leaves it
+ * empty instead of snapping back to the clamped minimum.
+ */
+function DistanceField({ value, onChange }: { value: number; onChange: (km: number) => void }) {
+  const [text, setText] = useState(String(value));
+  useEffect(() => {
+    setText((current) => (Number(current) === value ? current : String(value)));
+  }, [value]);
+  return (
+    <View style={styles.distanceWrap}>
+      <TextInput
+        value={text}
+        onChangeText={(next) => {
+          setText(next);
+          const parsed = Number(next);
+          if (next.trim() && Number.isFinite(parsed) && parsed >= 1) onChange(parsed);
+        }}
+        onBlur={() => setText(String(value))}
+        keyboardType="decimal-pad"
+        selectTextOnFocus
+        returnKeyType="done"
+        style={styles.distanceInput}
+        accessibilityLabel="Target distance in kilometres"
+      />
+      <Text style={styles.muted}>km</Text>
     </View>
   );
 }
@@ -633,7 +701,6 @@ const styles = StyleSheet.create({
   buttonRow: { flexDirection: 'row', gap: 6 },
   choice: { flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLOR.line, borderRadius: 11, backgroundColor: COLOR.raised }, choiceText: { color: COLOR.ink, fontSize: 11, fontWeight: '700' },
   panel: { gap: 9, padding: 12, borderRadius: RADIUS.panel, backgroundColor: COLOR.panel },
-  devPanel: { gap: 8, padding: 12, borderWidth: 1, borderColor: '#937a30', borderRadius: RADIUS.panel, backgroundColor: '#fff8dc' },
   fieldRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   label: { color: COLOR.ink, fontSize: 13, fontWeight: '700' },
   distanceWrap: { flexDirection: 'row', alignItems: 'center', gap: 4 },

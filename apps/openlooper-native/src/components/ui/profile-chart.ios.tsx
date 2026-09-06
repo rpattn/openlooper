@@ -4,9 +4,11 @@ import { useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { COLOR } from '@/theme';
-import { elevationSummary, sampleElevation } from './elevation-model';
-import { ElevationScrubber } from './elevation-scrubber';
-import type { ElevationChartProps } from './types';
+import { ColourStrip } from './colour-strip';
+import { Legend } from './legend';
+import { sampleSeries, seriesSummary } from './series-model';
+import { SeriesScrubber } from './series-scrubber';
+import type { ProfileChartProps } from './types';
 
 const HEIGHT = 132;
 const SAMPLES = 110;
@@ -16,24 +18,34 @@ const SAMPLES = 110;
  * chart above it. `showGrid` stays off so the plot fills the host exactly and
  * the React Native cursor lines up with the data.
  */
-export function ElevationChart({ points, accent, onPoint }: ElevationChartProps) {
-  const samples = useMemo(() => sampleElevation(points, SAMPLES), [points]);
-  const summary = useMemo(() => elevationSummary(samples), [samples]);
+export function ProfileChart({
+  series,
+  spans,
+  totalKm,
+  legend,
+  accent,
+  onPoint,
+}: ProfileChartProps) {
+  const samples = useMemo(() => sampleSeries(series.points, SAMPLES), [series.points]);
+  const summary = useMemo(() => seriesSummary(samples), [samples]);
   const data = useMemo(
-    () => samples.map((point) => ({ x: point.distanceKm, y: point.elevationM })),
+    () => samples.map((point) => ({ x: point.distanceKm, y: point.value })),
     [samples],
   );
+  const format = (value: number) => `${value.toFixed(series.precision)}${series.unit}`;
+  if (!samples.length) return null;
   return (
     <View style={styles.wrap}>
       <View style={styles.axis}>
-        <Text style={styles.axisText}>{Math.round(summary.max)} m</Text>
-        <Text style={styles.axisText}>{Math.round(summary.min)} m</Text>
+        <Text style={styles.axisText}>{format(summary.max)}</Text>
+        <Text style={styles.axisText}>{format(summary.min)}</Text>
       </View>
-      <ElevationScrubber
+      <SeriesScrubber
         points={samples}
-        summary={summary}
         accent={accent}
         height={HEIGHT}
+        label={series.label}
+        format={format}
         onPoint={onPoint}
       >
         <View style={styles.grid} pointerEvents="none">
@@ -55,17 +67,19 @@ export function ElevationChart({ points, accent, onPoint }: ElevationChartProps)
         <Host style={StyleSheet.absoluteFill} pointerEvents="none" colorScheme="light">
           <Chart data={data} type="line" showGrid={false} lineStyle={{ color: accent, width: 2.5 }} />
         </Host>
-      </ElevationScrubber>
+      </SeriesScrubber>
+      <ColourStrip spans={spans} totalKm={totalKm} />
       <View style={styles.footer}>
         <Text style={styles.axisText}>0 km</Text>
         <Text style={styles.axisText}>{summary.distanceKm.toFixed(1)} km</Text>
       </View>
+      <Legend entries={legend} />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  wrap: { gap: 4 },
+  wrap: { gap: 6 },
   axis: { flexDirection: 'row', justifyContent: 'space-between' },
   axisText: { color: COLOR.faint, fontSize: 10, fontVariant: ['tabular-nums'] },
   grid: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, justifyContent: 'space-evenly', zIndex: 1 },

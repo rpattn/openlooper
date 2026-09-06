@@ -1,7 +1,9 @@
 import type { SFSymbol } from 'sf-symbols-typescript';
 import type { StyleProp, ViewStyle } from 'react-native';
 
-import type { Coordinate, ElevationPoint, WaypointRole } from '@/domain/models';
+import type { ColourSpan, LegendEntry } from '../../../../../src/domain/route-overlays';
+import type { RouteSeries } from '../../../../../src/domain/route-series';
+import type { Coordinate, WaypointRole } from '@/domain/models';
 
 export type SegmentedOption<T extends string> = { value: T; label: string };
 
@@ -47,13 +49,20 @@ export type WaypointRow = {
 export type WaypointListProps = {
   rows: WaypointRow[];
   accent: string;
+  /** While inspecting, the list reads out the points without offering to change them. */
+  editable: boolean;
   onMove: (from: number, to: number) => void;
   onDelete: (index: number) => void;
   onSelect: (id: string) => void;
 };
 
-export type ElevationChartProps = {
-  points: ElevationPoint[];
+export type ProfileChartProps = {
+  /** Whatever the active colouring plots against distance. */
+  series: RouteSeries;
+  /** The route's colouring, laid out along the same distance axis. */
+  spans: ColourSpan[];
+  totalKm: number;
+  legend: LegendEntry[];
   accent: string;
   onPoint: (coordinate?: Coordinate) => void;
 };

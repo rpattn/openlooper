@@ -1,3 +1,4 @@
+import { cumulativeDistances } from "./geometry";
 import type { EdgeAttributes, RouteOverlay, RouteResult } from "./models";
 
 export type OverlayBand = {
@@ -6,6 +7,8 @@ export type OverlayBand = {
   color: string;
 };
 export type LegendEntry = { color: string; label: string };
+/** A coloured band expressed along the route's distance axis. */
+export type ColourSpan = { startKm: number; endKm: number; color: string };
 export type OverlayRender = {
   bands: OverlayBand[];
   legend: LegendEntry[];
@@ -194,4 +197,22 @@ export function overlayRender(
       { color: UNKNOWN, label: "No recorded use" },
     ],
   };
+}
+
+/**
+ * Re-expresses the map's coloured bands against distance travelled, so the same
+ * colouring can be drawn under the profile chart.
+ */
+export function overlaySpans(
+  route: RouteResult,
+  bands: OverlayBand[],
+): ColourSpan[] {
+  const cumulative = cumulativeDistances(route.geometry);
+  const total = cumulative.at(-1) ?? 0;
+  if (!total) return [];
+  return bands.map((band) => ({
+    startKm: cumulative[band.beginIndex] ?? 0,
+    endKm: cumulative[band.endIndex] ?? total,
+    color: band.color,
+  }));
 }

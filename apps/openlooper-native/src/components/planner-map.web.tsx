@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type * as MapLibre from 'maplibre-gl';
 
-import { ACTIVITY, type Coordinate, type MapStyleId, type RouteIssue, type Waypoint } from '@/domain/models';
+import type { Coordinate, MapStyleId, RouteIssue, Waypoint } from '@/domain/models';
 import type { PlannerMapProps } from './planner-map.types';
 
 type MapLibreModule = typeof import('maplibre-gl');
@@ -68,6 +68,7 @@ export function PlannerMap(props: PlannerMapProps) {
           const interactive = instance.queryRenderedFeatures(event.point, {
             layers: ['alternatives-hit', 'issues-hit', 'edges-hit'].filter((id) => instance.getLayer(id)),
           });
+          if (snapshot.current.interaction === 'inspect') return;
           if (!interactive.length || snapshot.current.activeTool === 'add')
             callbacks.current.onMapPress({ lat: event.lngLat.lat, lon: event.lngLat.lng });
         });
@@ -83,24 +84,24 @@ export function PlannerMap(props: PlannerMapProps) {
           addLayers(instance);
           setReady(true);
           renderData(instance, snapshot.current);
-          renderMarkers(module, instance, markers, snapshot.current.waypoints, callbacks);
+          renderMarkers(module, instance, markers, snapshot.current.waypoints, callbacks, snapshot.current.interaction === 'edit');
           instance.on('click', 'issues-hit', (event) => {
-            if (snapshot.current.activeTool === 'add') return;
+            if (snapshot.current.interaction === 'edit' && snapshot.current.activeTool === 'add') return;
             const id = event.features?.[0]?.properties?.id as string | undefined;
             if (id) callbacks.current.onIssuePress(id);
           });
           instance.on('click', 'edges-hit', (event) => {
-            if (snapshot.current.activeTool === 'add') return;
+            if (snapshot.current.interaction === 'edit' && snapshot.current.activeTool === 'add') return;
             const index = Number(event.features?.[0]?.properties?.index);
             if (Number.isFinite(index)) callbacks.current.onEdgePress(index);
           });
           instance.on('click', 'alternatives-hit', (event) => {
-            if (snapshot.current.activeTool === 'add') return;
+            if (snapshot.current.interaction === 'edit' && snapshot.current.activeTool === 'add') return;
             const id = event.features?.[0]?.properties?.id as string | undefined;
             if (id) callbacks.current.onAlternativePress(id);
           });
         });
-        renderMarkers(module, instance, markers, snapshot.current.waypoints, callbacks);
+        renderMarkers(module, instance, markers, snapshot.current.waypoints, callbacks, snapshot.current.interaction === 'edit');
         observer = new ResizeObserver(() => instance.resize());
         observer.observe(container.current);
       })
@@ -118,7 +119,7 @@ export function PlannerMap(props: PlannerMapProps) {
     if (!instance || !ready) return;
     renderData(instance, props);
     void import('maplibre-gl').then((module) => {
-      if (map.current === instance) renderMarkers(module, instance, markers, props.waypoints, callbacks);
+      if (map.current === instance) renderMarkers(module, instance, markers, props.waypoints, callbacks, props.interaction === 'edit');
     });
   }, [props, ready]);
 
@@ -195,7 +196,7 @@ function addLayers(map: MapLibre.Map) {
   map.addLayer({ id: 'alternatives', type: 'line', source: 'alternatives', paint: { 'line-color': '#48534b', 'line-width': 5, 'line-opacity': 0.3 } });
   map.addLayer({ id: 'alternatives-hit', type: 'line', source: 'alternatives', paint: { 'line-color': '#000', 'line-width': 16, 'line-opacity': 0 } });
   map.addLayer({ id: 'route-casing', type: 'line', source: 'route', paint: { 'line-color': '#fff', 'line-width': 9, 'line-opacity': 0.9 } });
-  map.addLayer({ id: 'route-line', type: 'line', source: 'route', paint: { 'line-color': '#e85d3f', 'line-width': 5 } });
+  map.addLayer({ id: 'route-line', type: 'line', source: 'route', paint: { 'line-color': ['coalesce', ['get', 'color'], '#e85d3f'], 'line-width': 5 } });
   map.addLayer({ id: 'edges-hit', type: 'line', source: 'edges', paint: { 'line-color': '#000', 'line-width': 16, 'line-opacity': 0 } });
   map.addLayer({ id: 'issues', type: 'line', source: 'issues', paint: { 'line-color': ['case', ['==', ['get', 'severity'], 'high'], '#b3261e', '#d77b16'], 'line-width': 7 } });
   map.addLayer({ id: 'issues-hit', type: 'line', source: 'issues', paint: { 'line-color': '#000', 'line-width': 18, 'line-opacity': 0 } });
@@ -211,15 +212,19 @@ function renderData(map: MapLibre.Map, props: PlannerMapProps) {
   const provisional = !props.route && props.waypoints.length > 1
     ? [line(props.waypoints.map((point) => point.coordinate))]
     : [];
+  const banded = props.route
+    ? props.bands.map((band) =>
+        line(props.route!.geometry.slice(band.beginIndex, band.endIndex + 1), { color: band.color }),
+      )
+    : [];
   setSource(map, 'alternatives', collection(props.alternatives
     .filter((item) => item.result.id !== props.route?.id)
     .map((item) => line(item.result.geometry, { id: item.id }))));
-  setSource(map, 'route', collection(props.route ? [line(props.route.geometry)] : provisional));
-  map.setPaintProperty('route-line', 'line-color', ACTIVITY[props.activity].color);
+  setSource(map, 'route', collection(props.route ? banded : provisional));
   setSource(map, 'edges', collection((props.route?.edges ?? []).map((edge, index) =>
     line(props.route!.geometry.slice(edge.beginIndex, edge.endIndex + 1), { index }),
   )));
-  setSource(map, 'issues', collection((props.route?.issues ?? []).map((issue: RouteIssue) => line(issue.geometry, { id: issue.id, severity: issue.severity }))));
+  setSource(map, 'issues', collection(props.showIssues ? (props.route?.issues ?? []).map((issue: RouteIssue) => line(issue.geometry, { id: issue.id, severity: issue.severity })) : []));
   setSource(map, 'highlight', collection(props.highlightedIssue ? [line(props.highlightedIssue.geometry)] : []));
   setSource(map, 'profile', collection(props.profilePoint ? [{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [props.profilePoint.lon, props.profilePoint.lat] } }] : []));
 }
@@ -230,6 +235,7 @@ function renderMarkers(
   markerRef: React.RefObject<MapLibre.Marker[]>,
   waypoints: Waypoint[],
   callbacks: React.RefObject<Callbacks>,
+  editing: boolean,
 ) {
   markerRef.current.forEach((marker) => marker.remove());
   markerRef.current = waypoints.map((point, index) => {
@@ -241,7 +247,7 @@ function renderMarkers(
       event.stopPropagation();
       callbacks.current.onWaypointPress(point.id);
     });
-    const marker = new maplibre.Marker({ element, anchor: 'center', draggable: true })
+    const marker = new maplibre.Marker({ element, anchor: 'center', draggable: editing })
       .setLngLat([point.coordinate.lon, point.coordinate.lat])
       .addTo(map);
     marker.on('dragend', () => {

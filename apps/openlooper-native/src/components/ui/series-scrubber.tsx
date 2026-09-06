@@ -2,14 +2,17 @@ import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { PanResponder, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 
 import { COLOR } from '@/theme';
-import type { Coordinate, ElevationPoint } from '@/domain/models';
-import { indexAtRatio, type ElevationSummary } from './elevation-model';
+import type { Coordinate } from '@/domain/models';
+import type { SeriesPoint } from '../../../../../src/domain/route-series';
+import { indexAtRatio } from './series-model';
 
-export type ScrubberProps = {
-  points: ElevationPoint[];
-  summary: ElevationSummary;
+export type SeriesScrubberProps = {
+  points: SeriesPoint[];
   accent: string;
   height: number;
+  label: string;
+  /** Formats the value under the cursor, units included. */
+  format: (value: number) => string;
   onPoint: (coordinate?: Coordinate) => void;
   /** The platform's chart, stretched to fill the plot area. */
   children: ReactNode;
@@ -20,14 +23,15 @@ export type ScrubberProps = {
  * the profile locates that position on the map identically everywhere. The
  * cursor and readout are drawn in React Native for exact alignment.
  */
-export function ElevationScrubber({
+export function SeriesScrubber({
   points,
-  summary,
   accent,
   height,
+  label,
+  format,
   onPoint,
   children,
-}: ScrubberProps) {
+}: SeriesScrubberProps) {
   const [width, setWidth] = useState(0);
   const [index, setIndex] = useState<number>();
   const size = useRef(0);
@@ -70,7 +74,7 @@ export function ElevationScrubber({
         {...responder.panHandlers}
         onLayout={layout}
         accessibilityRole="adjustable"
-        accessibilityLabel={`Elevation profile from ${Math.round(summary.min)} to ${Math.round(summary.max)} metres`}
+        accessibilityLabel={`${label} profile`}
         style={[styles.plot, { height }]}
       >
         {children}
@@ -84,7 +88,7 @@ export function ElevationScrubber({
       <View style={styles.readoutRow}>
         <Text style={styles.readout}>
           {selected
-            ? `${selected.distanceKm.toFixed(1)} km · ${Math.round(selected.elevationM)} m`
+            ? `${selected.distanceKm.toFixed(1)} km · ${format(selected.value)}`
             : 'Drag across the profile to locate it on the map.'}
         </Text>
         {selected && (

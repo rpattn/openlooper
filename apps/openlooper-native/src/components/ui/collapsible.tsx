@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { COLOR, RADIUS } from '@/theme';
@@ -8,6 +8,8 @@ export type CollapsibleProps = {
   /** Short summary shown next to the title while the section is closed. */
   badge?: string;
   defaultOpen?: boolean;
+  /** Opens the section when something outside it needs to be read. */
+  forceOpen?: boolean;
   tone?: 'panel' | 'dev';
   children: ReactNode;
 };
@@ -17,10 +19,14 @@ export function Collapsible({
   title,
   badge,
   defaultOpen = false,
+  forceOpen = false,
   tone = 'panel',
   children,
 }: CollapsibleProps) {
   const [open, setOpen] = useState(defaultOpen);
+  useEffect(() => {
+    if (forceOpen) setOpen(true);
+  }, [forceOpen]);
   return (
     <View style={tone === 'dev' ? styles.dev : styles.panel}>
       <Pressable
@@ -30,8 +36,10 @@ export function Collapsible({
         onPress={() => setOpen((value) => !value)}
         style={styles.header}
       >
-        <Text style={styles.title}>{title}</Text>
-        {!!badge && <Text style={styles.badge}>{badge}</Text>}
+        <View style={styles.grow}>
+          <Text style={styles.title}>{title}</Text>
+          {!!badge && <Text style={styles.badge} numberOfLines={1}>{badge}</Text>}
+        </View>
         <Text style={styles.chevron}>{open ? '⌃' : '⌄'}</Text>
       </Pressable>
       {open && <View style={styles.body}>{children}</View>}
@@ -49,6 +57,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   header: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 44, paddingHorizontal: 12 },
+  grow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 },
   title: { color: COLOR.ink, fontSize: 14, fontWeight: '900' },
   badge: { flex: 1, color: COLOR.muted, fontSize: 12 },
   chevron: { color: COLOR.muted, fontSize: 15, fontWeight: '900', lineHeight: 18 },

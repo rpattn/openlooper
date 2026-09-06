@@ -24,7 +24,7 @@ import type { WaypointListProps } from './types';
 // fixed row height and the host can be sized without measuring SwiftUI.
 const ROW_HEIGHT = 52;
 
-export function WaypointList({ rows, accent, onMove, onDelete, onSelect }: WaypointListProps) {
+export function WaypointList({ rows, accent, editable, onMove, onDelete, onSelect }: WaypointListProps) {
   return (
     <Host style={[styles.host, { height: rows.length * ROW_HEIGHT + 4 }]} colorScheme="light" seedColor={accent}>
       <List
@@ -32,7 +32,7 @@ export function WaypointList({ rows, accent, onMove, onDelete, onSelect }: Waypo
           listStyle('plain'),
           scrollDisabled(true),
           scrollContentBackground('hidden'),
-          environment('editMode', 'active'),
+          environment('editMode', editable ? 'active' : 'inactive'),
         ]}
       >
         <List.ForEach
@@ -54,8 +54,8 @@ export function WaypointList({ rows, accent, onMove, onDelete, onSelect }: Waypo
                 listRowInsets({ top: 0, bottom: 0, leading: 12, trailing: 12 }),
                 listRowBackground(COLOR.raised),
                 listRowSeparator('hidden'),
-                moveDisabled(row.locked),
-                deleteDisabled(row.locked),
+                moveDisabled(row.locked || !editable),
+                deleteDisabled(row.locked || !editable),
                 onTapGesture(() => onSelect(row.id)),
               ]}
             >

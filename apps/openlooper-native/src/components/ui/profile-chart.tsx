@@ -2,31 +2,43 @@ import { useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { COLOR } from '@/theme';
-import { elevationSummary, sampleElevation } from './elevation-model';
-import { ElevationScrubber } from './elevation-scrubber';
-import type { ElevationChartProps } from './types';
+import { ColourStrip } from './colour-strip';
+import { Legend } from './legend';
+import { sampleSeries, seriesSummary } from './series-model';
+import { SeriesScrubber } from './series-scrubber';
+import type { ProfileChartProps } from './types';
 
 const HEIGHT = 132;
 const COLUMNS = 72;
 
 /**
- * Android/web area profile. Butted columns with a coloured cap read as a filled
- * area under a line without pulling in an SVG renderer.
+ * Android/web profile. Butted columns with a coloured cap read as a filled area
+ * under a line without pulling in an SVG renderer.
  */
-export function ElevationChart({ points, accent, onPoint }: ElevationChartProps) {
-  const samples = useMemo(() => sampleElevation(points, COLUMNS), [points]);
-  const summary = useMemo(() => elevationSummary(samples), [samples]);
+export function ProfileChart({
+  series,
+  spans,
+  totalKm,
+  legend,
+  accent,
+  onPoint,
+}: ProfileChartProps) {
+  const samples = useMemo(() => sampleSeries(series.points, COLUMNS), [series.points]);
+  const summary = useMemo(() => seriesSummary(samples), [samples]);
+  const format = (value: number) => `${value.toFixed(series.precision)}${series.unit}`;
+  if (!samples.length) return null;
   return (
     <View style={styles.wrap}>
       <View style={styles.axis}>
-        <Text style={styles.axisText}>{Math.round(summary.max)} m</Text>
-        <Text style={styles.axisText}>{Math.round(summary.min)} m</Text>
+        <Text style={styles.axisText}>{format(summary.max)}</Text>
+        <Text style={styles.axisText}>{format(summary.min)}</Text>
       </View>
-      <ElevationScrubber
+      <SeriesScrubber
         points={samples}
-        summary={summary}
         accent={accent}
         height={HEIGHT}
+        label={series.label}
+        format={format}
         onPoint={onPoint}
       >
         <View style={styles.grid} pointerEvents="none">
@@ -41,7 +53,7 @@ export function ElevationChart({ points, accent, onPoint }: ElevationChartProps)
               style={[
                 styles.column,
                 {
-                  height: 6 + ((point.elevationM - summary.min) / summary.range) * (HEIGHT - 14),
+                  height: 6 + ((point.value - summary.min) / summary.range) * (HEIGHT - 14),
                   backgroundColor: `${accent}26`,
                   borderTopColor: accent,
                 },
@@ -49,17 +61,19 @@ export function ElevationChart({ points, accent, onPoint }: ElevationChartProps)
             />
           ))}
         </View>
-      </ElevationScrubber>
+      </SeriesScrubber>
+      <ColourStrip spans={spans} totalKm={totalKm} />
       <View style={styles.footer}>
         <Text style={styles.axisText}>0 km</Text>
         <Text style={styles.axisText}>{summary.distanceKm.toFixed(1)} km</Text>
       </View>
+      <Legend entries={legend} />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  wrap: { gap: 4 },
+  wrap: { gap: 6 },
   axis: { flexDirection: 'row', justifyContent: 'space-between' },
   axisText: { color: COLOR.faint, fontSize: 10, fontVariant: ['tabular-nums'] },
   grid: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, justifyContent: 'space-evenly' },

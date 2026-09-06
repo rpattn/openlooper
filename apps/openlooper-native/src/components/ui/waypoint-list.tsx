@@ -8,7 +8,7 @@ import type { WaypointListProps } from './types';
  * Android/web stand-in for the iOS drag-to-reorder list. Reordering is exposed
  * as explicit up/down buttons so it stays usable without a drag affordance.
  */
-export function WaypointList({ rows, accent, onMove, onDelete, onSelect }: WaypointListProps) {
+export function WaypointList({ rows, accent, editable, onMove, onDelete, onSelect }: WaypointListProps) {
   const movable = rows.filter((row) => !row.locked).length;
   return (
     <View style={styles.list}>
@@ -21,7 +21,7 @@ export function WaypointList({ rows, accent, onMove, onDelete, onSelect }: Waypo
             <Text style={styles.title}>{row.title}</Text>
             <Text style={styles.subtitle}>{row.subtitle}</Text>
           </View>
-          {!row.locked && (
+          {editable && !row.locked && (
             <View style={styles.actions}>
               <Step
                 label="↑"

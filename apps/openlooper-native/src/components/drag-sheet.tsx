@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { StyleSheet, View, useWindowDimensions, type LayoutChangeEvent } from 'react-native';
+import { Keyboard, StyleSheet, View, useWindowDimensions, type LayoutChangeEvent } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   clamp,
@@ -12,11 +12,11 @@ import Animated, {
 
 import { COLOR, RADIUS, SHADOW } from '@/theme';
 import type { SheetState } from '@/domain/models';
+import { COLLAPSED_FALLBACK, SHEET_FRACTION } from './sheet-detents';
 import { GlassSurface } from './ui/glass-surface';
 
 const SPRING = { damping: 26, stiffness: 240, mass: 0.9 } as const;
 const HANDLE_BLOCK = 26;
-const DEFAULT_PEEK = 104;
 
 export type DragSheetProps = {
   snap: SheetState;
@@ -43,12 +43,15 @@ export function DragSheet({
   children,
 }: DragSheetProps) {
   const { height: windowHeight } = useWindowDimensions();
-  const [peekHeight, setPeekHeight] = useState(DEFAULT_PEEK);
+  const [peekHeight, setPeekHeight] = useState(COLLAPSED_FALLBACK);
 
   const points = useMemo(() => {
     const collapsed = Math.min(peekHeight + bottomInset, windowHeight * 0.4);
-    const full = Math.round(windowHeight * 0.92);
-    const half = Math.max(collapsed + 40, Math.min(full, Math.round(windowHeight * 0.55)));
+    const full = Math.round(windowHeight * SHEET_FRACTION.full);
+    const half = Math.max(
+      collapsed + 40,
+      Math.min(full, Math.round(windowHeight * SHEET_FRACTION.half)),
+    );
     return { collapsed, half, full };
   }, [bottomInset, peekHeight, windowHeight]);
 
@@ -66,6 +69,12 @@ export function DragSheet({
     height.value = withSpring(target, SPRING);
   }, [height, target]);
 
+  // `Keyboard.dismiss` is bound to the native keyboard object, which a worklet
+  // cannot copy, so the gesture calls a plain function instead.
+  const dismissKeyboard = useCallback(() => {
+    Keyboard.dismiss();
+  }, []);
+
   const commit = useCallback(
     (next: SheetState) => {
       if (next !== snap) onSnap(next);
@@ -78,6 +87,8 @@ export function DragSheet({
       Gesture.Pan()
         .onBegin(() => {
           started.value = height.value;
+          // Otherwise the keyboard is left hanging over wherever the sheet went.
+          runOnJS(dismissKeyboard)();
         })
         .onUpdate((event) => {
           height.value = clamp(started.value - event.translationY, points.collapsed, points.full);
@@ -96,7 +107,7 @@ export function DragSheet({
           height.value = withSpring(best[1], SPRING);
           runOnJS(commit)(best[0]);
         }),
-    [commit, height, points, started],
+    [commit, dismissKeyboard, height, points, started],
   );
 
   const sheetStyle = useAnimatedStyle(() => ({ height: height.value }));

@@ -1,6 +1,7 @@
+import type { OverlayBand } from '../../../../src/domain/route-overlays';
 import type {
-  Activity,
   Coordinate,
+  InteractionMode,
   MapCamera,
   MapStyleId,
   RouteAlternative,
@@ -10,8 +11,13 @@ import type {
 } from '@/domain/models';
 
 export type PlannerMapProps = {
-  activity: Activity;
   activeTool: 'start' | 'destination' | 'add';
+  /** `inspect` never edits the route, so taps only read from it. */
+  interaction: InteractionMode;
+  /** Coloured spans of the selected route, from the chosen colouring. */
+  bands: OverlayBand[];
+  /** Issue spans are only drawn over the plain route colouring. */
+  showIssues: boolean;
   camera: MapCamera;
   mapStyle: MapStyleId;
   /** Height of the sheet, so route fitting keeps the route above it. */

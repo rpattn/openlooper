@@ -6,11 +6,11 @@ import MapView, {
   type Region,
 } from 'react-native-maps';
 import { useEffect, useRef } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 
 import { COLOR } from '@/theme';
 import { roleColor } from './ui/waypoint-role';
-import { ACTIVITY, type Coordinate, type MapStyleId } from '@/domain/models';
+import type { Coordinate, MapStyleId } from '@/domain/models';
 import type { PlannerMapProps } from './planner-map.types';
 
 const nativeCoordinates = (points: Coordinate[]) =>
@@ -26,8 +26,10 @@ const MAP_TYPE: Record<MapStyleId, MapType> = {
 };
 
 export function PlannerMap({
-  activity,
   activeTool,
+  interaction,
+  bands,
+  showIssues,
   camera,
   mapStyle,
   bottomInset,
@@ -46,10 +48,16 @@ export function PlannerMap({
   onCameraChange,
 }: PlannerMapProps) {
   const map = useRef<MapView>(null);
-  const emittedCenter = useRef<Coordinate | undefined>(undefined);
+  // Seeded with the region the map mounts at, so the framing effect below does
+  // not re-animate over `initialRegion` before the map has been laid out.
+  const emittedCenter = useRef<Coordinate | undefined>(camera.center);
+  const size = useRef({ width: 0, height: 0 });
   const inset = useRef(bottomInset);
   inset.current = bottomInset;
   const imagery = mapStyle === 'satellite' || mapStyle === 'hybrid';
+  const editing = interaction === 'edit';
+  // The add tool wants raw map taps; inspecting always prefers the feature tap.
+  const readable = !editing || activeTool !== 'add';
 
   useEffect(() => {
     if (!route?.geometry.length) return;
@@ -59,12 +67,24 @@ export function PlannerMap({
     });
   }, [fitRequest, route?.geometry, route?.id]);
 
+  // Framing is done with an explicit region rather than `animateCamera`, so the
+  // on-screen scale is exactly what the offset below is calculated against.
+  // MapKit ignores `mapPadding` when centring, so the sheet is accounted for by
+  // moving the centre south until the target sits in the strip above it.
   useEffect(() => {
     const emitted = emittedCenter.current;
     if (emitted && Math.abs(emitted.lat - camera.center.lat) < 0.00001 && Math.abs(emitted.lon - camera.center.lon) < 0.00001) return;
-    map.current?.animateCamera({
-      center: { latitude: camera.center.lat, longitude: camera.center.lon },
-      zoom: camera.zoom,
+    const { width, height } = size.current;
+    if (width <= 0 || height <= 0) return;
+    const longitudeDelta = 360 / 2 ** camera.zoom;
+    const latitudeDelta =
+      longitudeDelta * Math.cos((camera.center.lat * Math.PI) / 180) * (height / width);
+    const shift = (latitudeDelta * Math.min(inset.current, height * 0.8)) / (2 * height);
+    map.current?.animateToRegion({
+      latitude: camera.center.lat - shift,
+      longitude: camera.center.lon,
+      latitudeDelta,
+      longitudeDelta,
     });
   }, [camera.center.lat, camera.center.lon, camera.zoom]);
 
@@ -106,6 +126,10 @@ export function PlannerMap({
           Math.log2(360 / Math.max(region.longitudeDelta, 0.00001)),
         );
       }}
+      onLayout={(event: LayoutChangeEvent) => {
+        const { width, height } = event.nativeEvent.layout;
+        if (width > 0 && height > 0) size.current = { width, height };
+      }}
       accessibilityLabel="Route planning map"
     >
       {alternatives
@@ -119,7 +143,7 @@ export function PlannerMap({
             tappable
             onPress={(event) => {
               event.stopPropagation();
-              if (activeTool !== 'add') onAlternativePress(item.id);
+              if (readable) onAlternativePress(item.id);
             }}
           />
         ))}
@@ -130,11 +154,16 @@ export function PlannerMap({
             strokeColor="rgba(255,255,255,0.92)"
             strokeWidth={9}
           />
-          <Polyline
-            coordinates={nativeCoordinates(route.geometry)}
-            strokeColor={ACTIVITY[activity].color}
-            strokeWidth={5}
-          />
+          {bands.map((band, index) => (
+            <Polyline
+              key={`band-${index}-${band.beginIndex}`}
+              coordinates={nativeCoordinates(
+                route.geometry.slice(band.beginIndex, band.endIndex + 1),
+              )}
+              strokeColor={band.color}
+              strokeWidth={5}
+            />
+          ))}
           {route.edges.map((edge, index) => (
             <Polyline
               key={`edge-${index}`}
@@ -146,11 +175,11 @@ export function PlannerMap({
               tappable
               onPress={(event) => {
                 event.stopPropagation();
-                if (activeTool !== 'add') onEdgePress(index);
+                if (readable) onEdgePress(index);
               }}
             />
           ))}
-          {route.issues.map((issue) => (
+          {showIssues && route.issues.map((issue) => (
             <Polyline
               key={issue.id}
               coordinates={nativeCoordinates(issue.geometry)}
@@ -159,7 +188,7 @@ export function PlannerMap({
               tappable
               onPress={(event) => {
                 event.stopPropagation();
-                if (activeTool !== 'add') onIssuePress(issue.id);
+                if (readable) onIssuePress(issue.id);
               }}
             />
           ))}
@@ -192,7 +221,7 @@ export function PlannerMap({
                 ? 'Finish'
                 : `Point ${index + 1}`
           }
-          draggable
+          draggable={editing}
           onDragEnd={(event) =>
             onWaypointMove(point.id, {
               lat: event.nativeEvent.coordinate.latitude,
