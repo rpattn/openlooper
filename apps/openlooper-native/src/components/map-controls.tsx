@@ -124,16 +124,16 @@ export function MapControls({
           onPress={() => setOpen((current) => (current === 'style' ? undefined : 'style'))}
         />
         <IconButton
-          symbol={editing ? 'pencil' : 'magnifyingglass'}
-          fallbackLabel={editing ? 'Edit' : 'View'}
+          // One control with one meaning: editing is either on or it is not.
+          // Swapping the symbol as well made it read as two different buttons.
+          symbol="pencil"
+          fallbackLabel="Edit"
           accessibilityLabel={
             editing
               ? 'Editing the route. Switch to inspecting.'
               : 'Inspecting the route. Switch to editing.'
           }
-          // Filled while editing and plain while inspecting: the accent says
-          // the route can be changed, rather than marking a mode either way.
-          accent={accent}
+          accent={editing ? accent : COLOR.muted}
           active={editing}
           size={44}
           onPress={() => onInteraction(editing ? 'inspect' : 'edit')}

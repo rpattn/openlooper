@@ -9,7 +9,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 
 import { COLOR } from '@/theme';
-import { waypointLabel } from '@/domain/waypoints';
+import { waypointLabel, waypointMarker } from '@/domain/waypoints';
 import { roleColor } from './ui/waypoint-role';
 import type { Coordinate, MapStyleId } from '@/domain/models';
 import type { PlannerMapProps } from './planner-map.types';
@@ -239,14 +239,14 @@ export function PlannerMap({
             strokeWidth={10}
           />
         )}
-        {waypoints.map((point, index) => {
-          const name = waypointLabel(mode, point.role, index);
-          return (
+        {waypoints.map((point, index) => (
             <Marker
               key={point.id}
               coordinate={{ latitude: point.coordinate.lat, longitude: point.coordinate.lon }}
               anchor={{ x: 0.5, y: 0.5 }}
-              title={name}
+              // No `title`: MapKit presents a callout of its own for any marker
+              // that has one, which showed a second copy of the name under the
+              // popup the planner draws itself.
               draggable={editing}
               onDragEnd={(event) =>
                 onWaypointMove(point.id, {
@@ -261,17 +261,10 @@ export function PlannerMap({
               }}
             >
               <View style={[styles.pin, { backgroundColor: roleColor(point.role) }]}>
-                <Text style={styles.pinText}>
-                  {point.role === 'start'
-                    ? 'A'
-                    : point.role === 'destination'
-                      ? 'B'
-                      : String(index + 1)}
-                </Text>
+                <Text style={styles.pinText}>{waypointMarker(point.role, index)}</Text>
               </View>
             </Marker>
-          );
-        })}
+        ))}
         {profilePoint && (
           <Marker
             coordinate={{ latitude: profilePoint.lat, longitude: profilePoint.lon }}

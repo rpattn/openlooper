@@ -43,8 +43,20 @@ export function waypointLabel(
   role: WaypointRole,
   index: number,
 ): string {
-  if (mode === 'loop') return index === 0 ? 'Start & finish' : `Loop point ${index}`;
+  // A loop's closing point sits on its start, so it goes by the same name.
+  if (mode === 'loop')
+    return index === 0 || role === 'destination' ? 'Start & finish' : `Loop point ${index}`;
   if (role === 'start') return 'Start';
   if (role === 'destination') return 'Finish';
   return `Via point ${index}`;
+}
+
+/**
+ * What a point is marked with on the map and in the list. It matches the number
+ * in the point's name, so a pin reading 2 is never the point called "point 1".
+ */
+export function waypointMarker(role: WaypointRole, index: number): string {
+  if (role === 'start') return 'A';
+  if (role === 'destination') return 'B';
+  return String(index);
 }

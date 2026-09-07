@@ -66,7 +66,7 @@ export function WaypointList({ rows, accent, editable, onMove, onDelete, onSelec
                   frame({ width: 22 }),
                 ]}
               >
-                {String(row.index + 1)}
+                {row.marker}
               </Text>
               <VStack alignment="leading" spacing={1}>
                 <Text modifiers={[font({ size: 15, weight: 'semibold' }), foregroundColor(COLOR.ink)]}>

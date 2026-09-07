@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type * as MapLibre from 'maplibre-gl';
 
-import { waypointLabel } from '@/domain/waypoints';
+import { waypointLabel, waypointMarker } from '@/domain/waypoints';
 import type { Coordinate, MapStyleId, RouteIssue, Waypoint } from '@/domain/models';
 import type { PlannerMapProps } from './planner-map.types';
 
@@ -266,7 +266,7 @@ function renderMarkers(
     element.type = 'button';
     element.className = `waypoint-marker waypoint-marker--${point.role}`;
     element.title = name;
-    element.textContent = point.role === 'start' ? 'A' : point.role === 'destination' ? 'B' : String(index + 1);
+    element.textContent = waypointMarker(point.role, index);
     const marker = new maplibre.Marker({ element, anchor: 'center', draggable: editing })
       .setLngLat([point.coordinate.lon, point.coordinate.lat])
       .addTo(map);

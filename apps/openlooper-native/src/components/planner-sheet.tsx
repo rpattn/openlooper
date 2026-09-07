@@ -31,7 +31,7 @@ import type {
   RoutingPreferences,
   Waypoint,
 } from '@/domain/models';
-import { editableWaypoints, waypointLabel } from '@/domain/waypoints';
+import { editableWaypoints, waypointLabel, waypointMarker } from '@/domain/waypoints';
 import { DragSheet } from './drag-sheet';
 import { PrimaryButton, SmallButton } from './ui/buttons';
 import { Collapsible } from './ui/collapsible';
@@ -458,6 +458,7 @@ function PointsPanel(props: Props & { accent: string }) {
     role: point.role,
     locked: loop && index === 0,
     title: waypointLabel(state.plan.mode, point.role, index),
+    marker: waypointMarker(point.role, index),
     subtitle: `${point.coordinate.lat.toFixed(5)}, ${point.coordinate.lon.toFixed(5)}`,
   }));
 

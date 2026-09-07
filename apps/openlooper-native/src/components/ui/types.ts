@@ -39,6 +39,8 @@ export type IconButtonProps = {
 export type WaypointRow = {
   id: string;
   title: string;
+  /** The same token the map draws on this point's pin. */
+  marker: string;
   subtitle: string;
   role: WaypointRole;
   index: number;

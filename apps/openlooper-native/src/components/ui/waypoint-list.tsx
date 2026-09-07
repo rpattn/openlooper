@@ -15,7 +15,7 @@ export function WaypointList({ rows, accent, editable, onMove, onDelete, onSelec
       {rows.map((row, index) => (
         <Pressable key={row.id} onPress={() => onSelect(row.id)} style={styles.row}>
           <View style={[styles.dot, { backgroundColor: roleColor(row.role) }]}>
-            <Text style={styles.dotText}>{row.index + 1}</Text>
+            <Text style={styles.dotText}>{row.marker}</Text>
           </View>
           <View style={styles.grow}>
             <Text style={styles.title}>{row.title}</Text>
