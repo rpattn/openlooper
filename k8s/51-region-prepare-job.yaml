@@ -42,8 +42,13 @@ spec:
                 # end, which Geofabrik answers 416 and --fail turns into a
                 # failed Job. Widening the evidence region re-runs this Job, so
                 # compare sizes first and only download when they differ.
-                remote=$(curl --fail --silent --location --head "$1" \
-                         | tr -d '\r' | awk 'tolower($1)=="content-length:"{v=$2} END{print v+0}')
+                # Never fatal: this only decides whether to skip a download.
+                # Under set -e a failing probe would otherwise kill the script
+                # silently, because --silent means it prints nothing either.
+                # Falling through to the real download reports the actual error.
+                remote=$(curl --fail --silent --show-error --location --head "$1" \
+                         | tr -d '\r' | awk 'tolower($1)=="content-length:"{v=$2} END{print v+0}' \
+                         || echo 0)
                 have=$([ -f "$2" ] && wc -c < "$2" || echo 0)
                 if [ "$remote" -gt 0 ] && [ "$have" -eq "$remote" ]; then
                   echo "    already complete ($have bytes); delete it to refresh"
@@ -55,7 +60,9 @@ spec:
                 fi
                 ls -l "$2"
               }
+              echo "curl $(curl --version | head -1)"
               url="$(cat /config/routing-url)"
+              echo "routing-url: ${url:-<empty, will merge the county list>}"
               if [ -n "$url" ]; then
                 fetch "$url" /routing/sources/routing-source.osm.pbf
               else
@@ -79,7 +86,9 @@ spec:
           command: ["/bin/sh", "-eu", "-c"]
           args:
             - |
+              echo "curl $(curl --version | head -1)"
               url="$(cat /config/routing-url)"
+              echo "routing-url: ${url:-<empty, will merge the county list>}"
               if [ -n "$url" ]; then
                 # One extract, used as-is. `cat` rather than `mv` so a re-run
                 # does not consume the resumable download.

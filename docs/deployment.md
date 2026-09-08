@@ -582,6 +582,7 @@ evidence — that split exists only in the cluster manifests.
 
 | Symptom | Cause |
 | --- | --- |
+| A prepare Job shows `Init:Error` | The failure is in an init container, so plain `kubectl logs` will not show it. Name the container: `kubectl -n openlooper logs <pod> -c download`, or `--all-containers`. |
 | `openlooper-evidence` crash-loops with "Evidence database is stale" | The PBF and database disagree. Expected mid-region-change; finish the runbook. |
 | `openlooper-evidence` crash-loops on "must both be mounted read-only" | `route-use-evidence.sqlite` or `evidence-region.osm.pbf` is missing from `/srv/openlooper/evidence`. |
 | `/api/*` returns 429 | The per-client rate limit. Raise `API_RATE`/`API_BURST` on `openlooper-web`, or find out who is hitting it in that pod's logs. |
