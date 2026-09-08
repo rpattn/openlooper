@@ -34,42 +34,45 @@ No region data lives in any image. The routing PBF and the evidence database
 change on a completely different cadence from the code, and a GB-wide graph runs
 to several GB — they belong on the node, not in a layer pushed on every commit.
 
-## One-time node setup
+## Two ways in
 
-Create the data directories:
+Create the data directories either way:
 
 ```bash
 sudo mkdir -p /srv/openlooper/{valhalla,evidence,gps}
 ```
 
-Seed them from the machine where you already prepared the prototype region, so
-the cluster has something to serve before you attempt a wider rebuild:
+Then pick one:
 
-```bash
-rsync -av --info=progress2 docker/valhalla/data/ NODE:/srv/openlooper/valhalla/
-rsync -av --info=progress2 \
-  docker/evidence/data/route-use-evidence.sqlite \
-  docker/evidence/data/build-report.json \
-  NODE:/srv/openlooper/evidence/
-# The evidence service checks its database against the PBF sitting beside it,
-# not against the routing one — see "Choosing the region". For this first seed
-# they are the same file.
-rsync -av --info=progress2 docker/valhalla/data/local-region.osm.pbf \
-  NODE:/srv/openlooper/evidence/evidence-region.osm.pbf
-```
+- **Build the region on the node.** The right choice for anything wider than the
+  two-county prototype, and the only choice if the node has more RAM than your
+  workstation. See *First deployment, from nothing* below.
+- **Seed the prototype region from a workstation that already has it.** Fastest
+  way to get something serving, and a reasonable first step before committing a
+  day to a UK-wide build:
 
-That is roughly 1 GB. Do **not** copy `docker/evidence/data/sources/` — the
-21 GB GPS archive is only needed to rebuild evidence, and the prepare Job
-downloads it onto the node itself.
+  ```bash
+  rsync -av --info=progress2 docker/valhalla/data/ NODE:/srv/openlooper/valhalla/
+  rsync -av --info=progress2 \
+    docker/evidence/data/route-use-evidence.sqlite \
+    docker/evidence/data/build-report.json \
+    NODE:/srv/openlooper/evidence/
+  # The evidence service checks its database against the PBF beside it, not
+  # against the routing one. For this seed they happen to be the same file.
+  rsync -av --info=progress2 docker/valhalla/data/local-region.osm.pbf \
+    NODE:/srv/openlooper/evidence/evidence-region.osm.pbf
+  ```
 
-Then apply the manifests:
+  About 1 GB. Do **not** copy `docker/evidence/data/sources/` — the 21 GB GPS
+  archive is only needed to rebuild evidence, and the node fetches it itself.
+  Then apply everything and skip to the checks below:
 
-```bash
-kubectl apply -f k8s/00-namespace.yaml
-kubectl apply -f k8s/10-valhalla.yaml -f k8s/20-evidence.yaml -f k8s/30-web.yaml
-```
+  ```bash
+  kubectl apply -f k8s/00-namespace.yaml
+  kubectl apply -f k8s/10-valhalla.yaml -f k8s/20-evidence.yaml -f k8s/30-web.yaml
+  ```
 
-Confirm all three are up before touching Cloudflare:
+### Checking it
 
 ```bash
 kubectl -n openlooper get pods
@@ -83,6 +86,150 @@ curl -s localhost:8080/api/evidence/status | head -c 400
 `openlooper-web` becomes ready immediately even when the other two are still
 starting — nginx resolves both upstreams per request rather than at boot, so a
 cold cluster gives you 502s on `/api/*` and a working page, not a crash loop.
+
+## First deployment, from nothing
+
+For a node with no prepared data at all. Everything is derived on the node; do
+not seed it from a workstation. Total elapsed time is most of a day, nearly all
+of it two builds you start and walk away from.
+
+**Run the two builds one after the other, never at the same time.** Valhalla's
+tile build and the evidence preparation Job are each allowed 24 Gi on a 32 GB
+node, and overlapping them will OOM-kill one of them hours in.
+
+```bash
+sudo mkdir -p /srv/openlooper/{valhalla,evidence,gps}
+git -C ~/openlooper pull
+```
+
+The evidence Jobs run `rpattn/openlooper-evidence`, so that image has to exist
+on Docker Hub first — push `production` and let the workflow finish before
+step 4.
+
+1. **Namespace and region.** Check `k8s/50-region-config.yaml` first: it ships
+   with UK-wide routing and a Midlands evidence bbox.
+
+   ```bash
+   kubectl apply -f k8s/00-namespace.yaml -f k8s/50-region-config.yaml
+   ```
+
+2. **Region prepare** — downloads the 2.1 GB extract and cuts the evidence
+   sub-region out of it. Tens of minutes, mostly transfer.
+
+   ```bash
+   kubectl -n openlooper apply -f k8s/51-region-prepare-job.yaml
+   kubectl -n openlooper logs -f job/openlooper-region-prepare
+   ```
+
+   It prints both PBF sizes and a projected evidence preparation peak. If that
+   projection is near 24 GiB, narrow `evidence-bbox` and run it again before
+   spending a day on a build that ends in an OOM kill.
+
+3. **Routing graph** — the first long build. Hours, and it downloads about 2 GB
+   of elevation along the way.
+
+   ```bash
+   kubectl apply -f k8s/10-valhalla.yaml
+   kubectl -n openlooper logs -f deploy/openlooper-valhalla
+   ```
+
+   Wait for it to finish before starting step 4. Confirm with
+   `kubectl -n openlooper get pods` showing `1/1 Running`.
+
+4. **Evidence database** — the second long build. Downloads and md5-checks the
+   21 GB GPS archive first, then streams it past the network.
+
+   ```bash
+   kubectl -n openlooper apply -f k8s/52-evidence-prepare-job.yaml
+   kubectl -n openlooper logs -f job/openlooper-evidence-prepare
+   ```
+
+5. **Promote the database.** On a first install there is nothing to move aside,
+   so this is just a rename — the `.previous` step in the region-change runbook
+   below does not apply yet.
+
+   ```bash
+   cd /srv/openlooper/evidence
+   sudo mv route-use-evidence.sqlite.next route-use-evidence.sqlite
+   sudo mv build-report.json.next build-report.json
+   kubectl apply -f k8s/20-evidence.yaml
+   kubectl -n openlooper logs -f deploy/openlooper-evidence
+   ```
+
+6. **Serve it.**
+
+   ```bash
+   kubectl apply -f k8s/30-web.yaml
+   kubectl -n openlooper port-forward svc/openlooper-web 8080:80
+   ```
+
+   Check `/healthz`, `/api/valhalla/status` and `/api/evidence/status` before
+   attaching the tunnel.
+
+### Doing it by hand instead
+
+The Jobs are a convenience, not a requirement. Nothing in the cluster owns this
+data: the Deployments mount `/srv/openlooper/valhalla` and
+`/srv/openlooper/evidence` as plain `hostPath` directories, so anything that
+puts the right files there works, and the Jobs are only wrappers around the
+commands below. Build by hand if you would rather watch it directly.
+
+Two things have to hold, whichever way you build:
+
+- `route-use-evidence.sqlite` and `evidence-region.osm.pbf` must sit beside each
+  other in `/srv/openlooper/evidence`, and the PBF must be the one the database
+  was built from. The service hashes it at startup and refuses to run otherwise.
+- Build on the node. A workstation with less RAM than the node cannot prepare a
+  region the node can serve — preparation peaks at roughly 50× the evidence
+  PBF's size.
+
+A manual build also gets the whole machine rather than the Job's 24 Gi ceiling,
+which buys a little more region.
+
+```bash
+# 1. Routing PBF. A single extract needs no merge — just download it.
+sudo curl -fL --retry 5 -C - -o /srv/openlooper/valhalla/local-region.osm.pbf \
+  https://download.geofabrik.de/europe/united-kingdom-latest.osm.pbf
+
+# 2. Evidence sub-region, cut from that same file so both are one OSM vintage.
+docker run --rm \
+  -v /srv/openlooper/valhalla:/routing:ro \
+  -v /srv/openlooper/evidence:/evidence \
+  iboates/osmium:1.18.0 \
+  extract --overwrite --bbox -3.15,52.05,-0.75,53.55 --strategy complete_ways \
+    /routing/local-region.osm.pbf -o /evidence/evidence-region.osm.pbf
+
+# 3. GPS archive, resumable, then verify it before spending hours on it.
+sudo curl -fL --retry 5 -C - -o /srv/openlooper/gps/gpx-planet-2013-04-09.tar.xz \
+  https://planet.openstreetmap.org/gps/gpx-planet-2013-04-09.tar.xz
+curl -fL -o /tmp/gps.md5 \
+  https://planet.openstreetmap.org/gps/gpx-planet-2013-04-09.tar.xz.md5
+awk '{print $1}' /tmp/gps.md5
+md5sum /srv/openlooper/gps/gpx-planet-2013-04-09.tar.xz
+
+# 4. The long one. Build the image locally rather than pulling if you prefer:
+#    docker build -t openlooper-evidence:local docker/evidence
+docker run --rm --name openlooper-evidence-prepare \
+  -v /srv/openlooper/evidence:/evidence \
+  -v /srv/openlooper/gps:/gps:ro \
+  rpattn/openlooper-evidence:latest \
+  python /app/prepare_evidence.py \
+    --pbf /evidence/evidence-region.osm.pbf \
+    --gps-archive /gps/gpx-planet-2013-04-09.tar.xz \
+    --output /evidence/route-use-evidence.sqlite \
+    --report /evidence/build-report.json \
+    --workers 8
+```
+
+Writing straight to `route-use-evidence.sqlite` is fine on a first build. Once
+the service is live, write to `route-use-evidence.sqlite.next` and use the swap
+in the region-change runbook instead — replacing the file under a running pod
+leaves it serving the old inode.
+
+The routing graph is the exception worth leaving to the cluster: the Valhalla
+Deployment builds its own tiles when it finds none, so applying
+`k8s/10-valhalla.yaml` and watching its logs is less work than driving
+`valhalla_build_tiles` yourself.
 
 ## Cloudflare tunnel
 
@@ -223,13 +370,13 @@ network-building phase and skips the GPS matching pass, so the real full-build
 peak is somewhat higher — the GPS pass adds an accumulator and eight forked
 workers dirtying shared pages.
 
-### Great Britain, on a 32 GB / 50 GB node
+### The UK, on a 32 GB node
 
 Use `europe/great-britain` (2.02 GB), not `europe/united-kingdom` (2.10 GB).
 The difference is Northern Ireland, and evidence preparation projects to
 EPSG:27700 — the British National Grid — which does not cover it.
 
-**Routing: yes.** GB is 28.5× the prototype region, so roughly 5.3 GB of tiles
+**Routing: yes.** The UK extract is 29.6× the prototype region, so roughly 5.5 GB of tiles
 and about 2 GB of elevation. The tile build is the slow part — hours, and
 `build_admins` on a GB extract is memory-hungry — but it happens once and
 serving afterwards is memory-mapped.

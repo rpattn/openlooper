@@ -49,17 +49,19 @@ spec:
           volumeMounts:
             - name: routing-data
               mountPath: /custom_files
-          # Loading a regional graph takes a while, and a start that finds no
-          # tiles builds them from the PBF first, which is hours for a
-          # multi-county region. 240 x 30 s gives that two hours before the
-          # kubelet decides the container is stuck; watch the logs instead of
-          # waiting on the probe.
+          # A start that finds no tiles builds them from the PBF first, and for
+          # a GB-wide extract that is many hours including the elevation
+          # download. A startup probe that gives up mid-build kills the
+          # container and starts the whole build again, so this budget is
+          # deliberately far longer than any real build: 960 x 30 s = 8 hours.
+          # The cost of it being too generous is only that a genuinely wedged
+          # start takes longer to notice, and the logs show that anyway.
           startupProbe:
             httpGet:
               path: /status
               port: http
             periodSeconds: 30
-            failureThreshold: 240
+            failureThreshold: 960
           readinessProbe:
             httpGet:
               path: /status
@@ -69,8 +71,17 @@ spec:
             requests:
               cpu: 500m
               memory: 2Gi
+            # Building tiles and serving them cost wildly different amounts, and
+            # this one container does both. Serving is memory-mapped and sits
+            # near the 2 Gi request; the initial build of a GB-wide graph needs
+            # far more, and an OOM kill mid-build throws away hours. Hence a
+            # limit sized for the build rather than the steady state.
+            #
+            # On a 32 GB node this must not overlap the evidence prepare Job,
+            # which is allowed 24 Gi of its own. Run the two builds one after
+            # the other, never at the same time.
             limits:
-              memory: 8Gi
+              memory: 24Gi
       volumes:
         - name: routing-data
           hostPath:

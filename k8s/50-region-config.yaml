@@ -14,10 +14,10 @@
 # and geometry agree wherever they overlap. Outside the evidence region there is
 # simply no evidence, which is already what the app means by unknown.
 #
-# Evidence preparation projects to EPSG:27700, the British National Grid, so the
-# evidence region must stay inside Great Britain. `europe/great-britain` is the
-# right routing extract for that reason too: `europe/united-kingdom` adds
-# Northern Ireland, which 27700 does not cover.
+# The 27700 constraint binds the evidence region only. Valhalla has no such
+# projection, so the routing region can be the whole United Kingdom, Northern
+# Ireland included; just do not put the evidence bbox over Northern Ireland,
+# where British National Grid coordinates are meaningless.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -28,10 +28,14 @@ data:
   # A single Geofabrik extract, used as-is. Leave empty to merge the county
   # list below instead.
   #
-  #   great-britain      2.02 GB   ~5.3 GB of tiles, hours to build
+  #   united-kingdom     2.10 GB   the whole UK, Northern Ireland included
+  #   great-britain      2.02 GB   England, Scotland and Wales only
   #   england            1.58 GB
   #   (empty)            merge `counties`
-  routing-url: https://download.geofabrik.de/europe/great-britain-latest.osm.pbf
+  #
+  # Either UK-wide option is roughly 5.3 GB of tiles and many hours to build,
+  # plus about 2 GB of elevation downloaded during that build.
+  routing-url: https://download.geofabrik.de/europe/united-kingdom-latest.osm.pbf
 
   # Used only when routing-url is empty. Geofabrik splits England by county.
   counties: |
@@ -42,7 +46,8 @@ data:
   # ---- Evidence sub-region -------------------------------------------------
   # west,south,east,north. Cut from the routing PBF with `osmium extract`.
   # Leave empty to prepare evidence for the whole routing region — only do that
-  # if the routing region is small enough to fit in RAM.
+  # if the routing region is small enough to fit in RAM, which a UK-wide one is
+  # not: it would need roughly 60 GiB and this node has 32 GB.
   #
   # This box: peak preparation memory runs about 29x the evidence PBF's size,
   # so a 24 GiB Job budget puts the ceiling near 500 MB of PBF. Check what a
