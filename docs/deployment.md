@@ -137,12 +137,20 @@ step 4.
    `kubectl -n openlooper get pods` showing `1/1 Running`.
 
 4. **Evidence database** — the second long build. Downloads and md5-checks the
-   21 GB GPS archive first, then streams it past the network.
+   21 GB GPS archive, prefilters it once, cuts the region into tiles, builds
+   each and merges them. Every step keeps its finished work, so a re-run
+   resumes rather than restarting.
 
    ```bash
+   kubectl -n openlooper create configmap openlooper-tile-script \
+     --from-file=tile_region.sh=docker/evidence/tile_region.sh \
+     --dry-run=client -o yaml | kubectl apply -f -
    kubectl -n openlooper apply -f k8s/52-evidence-prepare-job.yaml
    kubectl -n openlooper logs -f job/openlooper-evidence-prepare
    ```
+
+   The ConfigMap carries `tile_region.sh` into the osmium step, which has no
+   copy of this repository. Re-apply it whenever that script changes.
 
 5. **Promote the database.** On a first install there is nothing to move aside,
    so this is just a rename — the `.previous` step in the region-change runbook
@@ -386,48 +394,70 @@ disk, a 32 GB swap file costs nothing, and a staged tile build is not the
 pathological random-access workload that would make swapping useless. If it
 still fails, fall back to `england` (1.58 GB) or a group of counties.
 
-**Evidence, as the pipeline stands: about 240 MB of PBF**, roughly 3x the
-two-county prototype. That is the 12 Gi Job ceiling against a full-build cost of
-roughly 50x the evidence PBF.
+**Evidence: no longer bounded by memory.** A single-process build peaks at
+roughly 50x its PBF, which would be about 100 GiB UK-wide. The evidence region
+is therefore built in tiles and merged, so peak memory is set by the largest
+tile. Sixteen gigabytes constrains how *small* the tiles must be, not how large
+the region can be.
 
-### Why not the whole UK
+### Building a region larger than memory
 
-Because `prepare_evidence.py` builds one region in one process, holding an
-STRtree over every highway way, the way geometries, and a per-section evidence
-dict in RAM at once. UK-wide that is on the order of 100 GiB. This is an
-implementation choice made for a 71 MB region on a laptop, not a property of the
-problem.
+`prepare_evidence.py` holds an STRtree over every highway way, the geometries,
+and a per-section dict in RAM at once. Rather than rewrite that, the region is
+cut into tiles, each built normally, and the results merged.
 
-The problem itself tiles cleanly, and that is worth stating precisely because it
-is what any fix would rely on:
+This is exact, not approximate, and it rests on two properties:
 
-- `section_id` is `f"{way_id}:{section_index}"`, where the index is a
-  deterministic 25 m offset along the way. It does not depend on what else is in
-  the PBF.
-- `osmium extract --strategy complete_ways` keeps a way that crosses a tile
-  boundary **whole** in every tile that touches it, so its length — and
-  therefore its section indices — are identical in each.
+- `section_id` is `way_id:section_index`, a deterministic 25 m offset along the
+  way. It does not depend on what else was in the PBF.
+- `osmium extract --strategy smart` keeps a way that crosses a tile boundary
+  whole, so its length, section count and geometry are identical in every tile
+  that contains it.
 
-Checked, not assumed: cutting two adjacent tiles out of the prototype region
-gave 457 boundary-crossing ways present in both, and all 457 had byte-identical
-node lists.
+Two things are needed to make a tiled build match a whole-region one, and each
+fails on its own:
 
-So section ids are globally stable, and tile databases merge with
-`INSERT OR IGNORE` on `network_section` while `section_evidence`'s existing
-`PRIMARY KEY (section_id, source_id)` collapses the duplicates. A UK-wide
-database is a merge of nine or ten tile builds, each of which fits in 12 Gi.
+- **Context.** A tile is extracted with a margin beyond the cell it owns. Without
+  it, a coordinate near a cell edge is attributed to the wrong way, because the
+  truly nearest way was cut away.
+- **Ownership.** `--own-bbox` makes a tile write only the ways whose midpoint
+  falls inside its cell. Without it, those wrong attributions survive in the
+  union — and widening the margin makes that *worse*, not better, by enlarging
+  the surface on which a truncated tile can guess.
 
-What it costs is time, not memory. Every tile pass re-streams the whole 21 GB
-compressed archive, and that decompression is single-core and sets the floor —
-roughly 40 minutes a pass before any matching. Ten tiles is 7 hours of
-decompression alone, so budget 12–24 hours. A single pre-filter pass writing the
-UK-relevant members to a smaller intermediate would cut that sharply; there is
-disk for it.
+The margin is not sized by the 24 m matching radius. Greenspace and water
+proximity consult polygons that run to kilometres. Measured against a
+whole-region build, a 0.002 degree margin still lost evidence up to 830 m from a
+boundary; 0.05 degrees reproduced it exactly.
 
-None of this exists yet. Today the pipeline builds one region, and the
-deployment covers that with UK-wide routing and regional evidence — which the
-app already handles: no evidence means unknown, routing still works, and ranking
-stays neutral outside the evidence region.
+Verified rather than assumed. A region built in two tiles and merged, compared
+against the same region built in one process:
+
+| | |
+| --- | --- |
+| Sections | 165,406 in both, identical set |
+| Evidence rows | 247,767 in both, identical set |
+| Geometry | byte-identical |
+| R-tree | complete, and a viewport query straddling the boundary returns rows |
+| Service startup | passes its PBF checksum check against the merged database |
+
+Ownership also partitions cleanly: every way is owned by exactly one tile, so the
+merge reported zero duplicate sections.
+
+The GPS archive is prefiltered once. Every tile build streams it, and
+decompressing 21 GB of xz is single-core — a floor of roughly forty minutes per
+pass, which ten tiles would pay ten times. `prefilter_gps.py` inflates it once,
+keeps the members whose bytes could hold a coordinate in the region, and writes
+them uncompressed; the tile builds then read at disk speed. The intermediate is
+a few GB for the shipped Midlands region and tens of GB for a UK-wide one, which
+is what the 500 GB disk is for. The original archive's checksums are carried
+into the database, so it still records what it was built from.
+
+Choosing a grid: `tile-cols` and `tile-rows` in `k8s/50-region-config.yaml`. The
+tiling step prints each tile's size and a projected peak before anything long
+starts — raise the grid until the largest clears the Job's 12 Gi limit. Tiles
+also resume: a completed tile is kept, so a failed run continues rather than
+restarting.
 
 ### Disk
 
@@ -443,7 +473,9 @@ and the GPS archive kept permanently resident, is under 50 GB:
 | Evidence sub-region PBF | ~0.4 GB |
 | Evidence database, keeping `.previous` and `.next` | ~6.0 GB |
 | GPS archive | 21 GB |
-| **Total** | **~51 GB of 500** |
+| Prefiltered intermediate | a few GB regional, tens of GB UK-wide |
+| Tile PBFs and per-tile databases | roughly twice the region's own |
+| **Total** | **well under 150 GB of 500** |
 
 Keep `/srv/openlooper/gps/gpx-planet-2013-04-09.tar.xz` rather than deleting it
 between builds. The prepare Job re-downloads it resumably if it is missing, but
@@ -494,10 +526,16 @@ multi-hour build.
    later rebuilds skip that:
 
    ```bash
+   kubectl -n openlooper create configmap openlooper-tile-script \
+     --from-file=tile_region.sh=docker/evidence/tile_region.sh \
+     --dry-run=client -o yaml | kubectl apply -f -
    kubectl -n openlooper delete job openlooper-evidence-prepare --ignore-not-found
    kubectl -n openlooper apply -f k8s/52-evidence-prepare-job.yaml
    kubectl -n openlooper logs -f job/openlooper-evidence-prepare
    ```
+
+   The ConfigMap carries `tile_region.sh` into the osmium step, which has no
+   copy of this repository. Re-apply it whenever that script changes.
 
    It writes `route-use-evidence.sqlite.next`, leaving the live database alone.
 

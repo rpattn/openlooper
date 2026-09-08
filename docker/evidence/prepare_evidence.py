@@ -297,6 +297,47 @@ class HashingReader:
         return getattr(self.raw, name)
 
 
+# Shared with merge_evidence.py, which builds the same shape from per-tile
+# databases. One definition so the two cannot drift apart.
+SCHEMA_SQL = """
+        PRAGMA journal_mode=OFF;
+        PRAGMA synchronous=OFF;
+        CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE evidence_source (
+          source_id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          label TEXT NOT NULL,
+          source_url TEXT NOT NULL,
+          licence TEXT NOT NULL,
+          attribution TEXT NOT NULL
+        );
+        CREATE TABLE network_section (
+          section_pk INTEGER PRIMARY KEY,
+          section_id TEXT NOT NULL UNIQUE,
+          way_id INTEGER NOT NULL,
+          section_index INTEGER NOT NULL,
+          start_m REAL NOT NULL,
+          end_m REAL NOT NULL,
+          geometry_wkb BLOB NOT NULL,
+          min_lon REAL NOT NULL,
+          min_lat REAL NOT NULL,
+          max_lon REAL NOT NULL,
+          max_lat REAL NOT NULL
+        );
+        CREATE TABLE section_evidence (
+          section_id TEXT NOT NULL REFERENCES network_section(section_id),
+          source_id TEXT NOT NULL REFERENCES evidence_source(source_id),
+          feature_reference TEXT,
+          PRIMARY KEY (section_id, source_id)
+        ) WITHOUT ROWID;
+        CREATE INDEX network_section_way_id ON network_section(way_id);
+        CREATE INDEX section_evidence_lookup ON section_evidence(section_id, source_id);
+        CREATE VIRTUAL TABLE network_section_rtree USING rtree(
+          section_pk, min_lon, max_lon, min_lat, max_lat
+        );
+        """
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -606,7 +647,10 @@ def stream_gps(
         hashing = HashingReader(raw)
         with ProcessPoolExecutor(max_workers=workers, mp_context=context) as executor:
             pending: set = set()
-            with tarfile.open(fileobj=hashing, mode="r|xz") as tar:
+            # "r|*" rather than "r|xz": a tiled build reads the uncompressed
+            # intermediate that prefilter_gps.py writes, and the original archive
+            # still opens through the same call.
+            with tarfile.open(fileobj=hashing, mode="r|*") as tar:
                 for member in tar:
                     if not member.isfile():
                         continue
@@ -703,45 +747,7 @@ def create_database(
     if temporary.exists():
         temporary.unlink()
     database = sqlite3.connect(temporary)
-    database.executescript(
-        """
-        PRAGMA journal_mode=OFF;
-        PRAGMA synchronous=OFF;
-        CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-        CREATE TABLE evidence_source (
-          source_id TEXT PRIMARY KEY,
-          kind TEXT NOT NULL,
-          label TEXT NOT NULL,
-          source_url TEXT NOT NULL,
-          licence TEXT NOT NULL,
-          attribution TEXT NOT NULL
-        );
-        CREATE TABLE network_section (
-          section_pk INTEGER PRIMARY KEY,
-          section_id TEXT NOT NULL UNIQUE,
-          way_id INTEGER NOT NULL,
-          section_index INTEGER NOT NULL,
-          start_m REAL NOT NULL,
-          end_m REAL NOT NULL,
-          geometry_wkb BLOB NOT NULL,
-          min_lon REAL NOT NULL,
-          min_lat REAL NOT NULL,
-          max_lon REAL NOT NULL,
-          max_lat REAL NOT NULL
-        );
-        CREATE TABLE section_evidence (
-          section_id TEXT NOT NULL REFERENCES network_section(section_id),
-          source_id TEXT NOT NULL REFERENCES evidence_source(source_id),
-          feature_reference TEXT,
-          PRIMARY KEY (section_id, source_id)
-        ) WITHOUT ROWID;
-        CREATE INDEX network_section_way_id ON network_section(way_id);
-        CREATE INDEX section_evidence_lookup ON section_evidence(section_id, source_id);
-        CREATE VIRTUAL TABLE network_section_rtree USING rtree(
-          section_pk, min_lon, max_lon, min_lat, max_lat
-        );
-        """
-    )
+    database.executescript(SCHEMA_SQL)
     database.executemany("INSERT INTO metadata(key, value) VALUES (?, ?)", metadata.items())
     database.executemany(
         "INSERT INTO evidence_source VALUES (?, ?, ?, ?, ?, ?)", SOURCE_ROWS
@@ -814,6 +820,27 @@ def main() -> None:
         action="store_true",
         help="Parse every archive member instead of only those whose bytes could hold an in-region coordinate.",
     )
+    parser.add_argument(
+        "--own-bbox",
+        help=(
+            "west,south,east,north of the cell this tile is responsible for."
+            " The PBF should extend beyond it: ways outside the cell are still"
+            " loaded, so coordinates near its edge are matched against the same"
+            " neighbourhood a whole-region build would see, but only ways whose"
+            " midpoint falls inside the cell are written. Without this a tiled"
+            " build can attribute a coordinate to the wrong way at tile edges,"
+            " because the truly nearest way was cut away."
+        ),
+    )
+    parser.add_argument(
+        "--gps-provenance",
+        type=Path,
+        help=(
+            "Provenance JSON from prefilter_gps.py. When --gps-archive is a prefiltered"
+            " intermediate, this carries the original archive's checksums and member"
+            " counts into the output so the database still records what it came from."
+        ),
+    )
     args = parser.parse_args()
     started = time.monotonic()
     to_projected = Transformer.from_crs(4326, 27700, always_xy=True)
@@ -884,6 +911,47 @@ def main() -> None:
         for mode in modes:
             evidence[(way_id, section_index)].setdefault(MODE_SOURCES[mode], None)
 
+    prefiltered = False
+    if args.gps_provenance:
+        # The intermediate's own digest would say nothing anybody can check, so
+        # record the digests of the archive it was distilled from. Its
+        # whole-archive member counts replace the intermediate's too, which
+        # otherwise only describe what survived the first pass.
+        provenance = json.loads(args.gps_provenance.read_text(encoding="utf-8"))
+        gps_sha256 = provenance["sourceSha256"]
+        gps_md5 = provenance["sourceMd5"]
+        prefiltered = True
+        for key in ("gps_members_total", "members_public", "members_trackable",
+                    "members_identifiable", "members_unknown"):
+            if key in provenance:
+                gps_stats[key] = provenance[key]
+        gps_stats["members_prefiltered_out"] = (
+            provenance.get("members_prefiltered_out", 0)
+            + gps_stats.get("members_prefiltered_out", 0)
+        )
+
+    if args.own_bbox:
+        values = [float(value) for value in args.own_bbox.split(",")]
+        if len(values) != 4 or values[0] >= values[2] or values[1] >= values[3]:
+            raise SystemExit("--own-bbox must be west,south,east,north")
+        own_west, own_south, own_east, own_north = values
+        # Half-open on the maximum edges so neighbouring cells partition the
+        # region: every way is owned by exactly one tile, never zero or two.
+        owned = set()
+        for way in way_list:
+            point = way.line_projected.interpolate(0.5, normalized=True)
+            lon, lat = to_wgs84.transform(point.x, point.y)
+            if own_west <= lon < own_east and own_south <= lat < own_north:
+                owned.add(way.way_id)
+        before = len(evidence)
+        evidence = {key: value for key, value in evidence.items() if key[0] in owned}
+        ways = {way_id: way for way_id, way in ways.items() if way_id in owned}
+        print(
+            f"Cell owns {len(owned):,} of {len(way_list):,} ways;"
+            f" {before - len(evidence):,} evidenced sections belong to neighbouring tiles",
+            flush=True,
+        )
+
     pbf_sha256 = sha256_file(args.pbf)
     built_at = datetime.now(timezone.utc).isoformat()
     metadata = {
@@ -891,6 +959,7 @@ def main() -> None:
         "gps_archive_sha256": gps_sha256,
         "gps_archive_md5": gps_md5,
         "gps_archive_complete": str(args.gps_member_limit is None).lower(),
+        "gps_archive_prefiltered": str(prefiltered).lower(),
         "built_at": built_at,
         "section_length_m": str(SECTION_LENGTH_M),
         "green_proximity_m": str(GREEN_PROXIMITY_M),
@@ -930,6 +999,7 @@ def main() -> None:
         "processingSeconds": round(time.monotonic() - started, 2),
         "workers": workers,
         "prefilterEnabled": not args.no_prefilter,
+        "gpsArchivePrefiltered": prefiltered,
         **gps_stats,
         "rejected_associations": sum(
             gps_stats.get(key, 0)

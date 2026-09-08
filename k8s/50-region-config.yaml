@@ -62,3 +62,25 @@ data:
   # The default covers Staffordshire, Derbyshire and their immediate
   # neighbours — the southern Peak, Cannock Chase and Charnwood.
   evidence-bbox: "-2.85,52.35,-1.05,53.45"
+
+  # ---- Evidence tiling -----------------------------------------------------
+  # The evidence region is built one tile at a time and the tile databases are
+  # merged, so peak memory is set by the largest tile rather than by the whole
+  # region. That is what lets a 16 GB node build an area it could never hold at
+  # once. See "Building a region larger than memory" in docs/deployment.md.
+  #
+  # Columns and rows over evidence-bbox. Cut them small enough that the largest
+  # tile's projected peak clears the Job's 12 Gi limit; the tiling step prints
+  # a projection per tile before anything long starts.
+  tile-cols: "1"
+  tile-rows: "1"
+
+  # Degrees of context extracted beyond each cell. Tiles overlap by this much,
+  # and prepare_evidence.py then writes only the ways whose midpoint falls in
+  # the cell it owns, so the overlap costs work but never double-counts.
+  #
+  # Do not shrink this to match the 24 m matching radius. Greenspace and water
+  # proximity consult polygons that run to kilometres: measured against a
+  # whole-region build, 0.002 degrees still lost evidence up to 830 m from a
+  # boundary, while 0.05 reproduced it exactly.
+  tile-margin: "0.05"

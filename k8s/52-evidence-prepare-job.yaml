@@ -1,22 +1,40 @@
-# Rebuilds the route-use evidence database against
+# Rebuilds the route-use evidence database for
 # /srv/openlooper/evidence/evidence-region.osm.pbf, the sub-region that
-# 51-region-prepare-job.yaml cut out of the routing PBF. This is the long one: it
-# streams the whole 21 GB compressed 2013 OSM GPS archive past the regional
-# network, which took about 45 minutes for the two-county prototype region and
-# scales with both the archive's fixed single-core decompression floor and the
-# widened prefilter bands of a larger region.
+# 51-region-prepare-job.yaml cut out of the routing PBF.
+#
+# Four steps, each resumable:
+#
+#   fetch-gps   downloads and md5-checks the 21 GB archive (kept afterwards)
+#   prefilter   one pass over it, keeping only members that could hold a
+#               coordinate in this region, written uncompressed
+#   tile        cuts the region into overlapping tiles
+#   build       one prepare_evidence.py per tile, then merges them
+#
+# The prefilter exists because every tile build streams the archive, and
+# decompressing 21 GB of xz is single-core: a floor of about forty minutes per
+# pass. Inflating once and reading a plain tar afterwards removes that floor
+# from every tile.
+#
+# The tiling exists because preparation holds the whole region's index in RAM.
+# Tiles bound that by construction, and the merge is exact — verified against a
+# whole-region build: identical sections, identical evidence, byte-identical
+# geometry.
+#
+# The tiling script lives in the repository and is mounted from a ConfigMap so
+# there is one copy of it:
+#
+#   kubectl -n openlooper create configmap openlooper-tile-script \
+#     --from-file=tile_region.sh=docker/evidence/tile_region.sh \
+#     --dry-run=client -o yaml | kubectl apply -f -
 #
 #   kubectl -n openlooper delete job openlooper-evidence-prepare --ignore-not-found
 #   kubectl -n openlooper apply -f k8s/52-evidence-prepare-job.yaml
 #   kubectl -n openlooper logs -f job/openlooper-evidence-prepare
 #
-# The first run downloads and md5-checks the 21 GB GPS archive into
-# /srv/openlooper/gps. Leave it there: rebuilds then skip hours of transfer.
-#
 # It writes route-use-evidence.sqlite.next rather than replacing the live file:
 # the running service holds the current database open, and swapping it under a
-# live pod leaves that pod serving the old inode. Promote it with the swap
-# described in docs/deployment.md once the Job has succeeded.
+# live pod leaves that pod serving the old inode. Promote it with the swap in
+# docs/deployment.md once the Job has succeeded.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -24,9 +42,9 @@ metadata:
   namespace: openlooper
 spec:
   backoffLimit: 0
-  # 12 hours. A wider region is slower, but a run still going after this has
-  # stalled rather than progressed — the script prints stats every 30 seconds.
-  activeDeadlineSeconds: 43200
+  # 24 hours. Every step keeps its finished work, so a re-run after this
+  # resumes; it is here to stop a wedged Job holding the node indefinitely.
+  activeDeadlineSeconds: 86400
   template:
     spec:
       restartPolicy: Never
@@ -41,6 +59,10 @@ spec:
               archive=/gps/gpx-planet-2013-04-09.tar.xz
               url=https://planet.openstreetmap.org/gps/gpx-planet-2013-04-09.tar.xz
               mkdir -p /gps
+              if [ -s "$archive.verified" ]; then
+                echo "Archive already downloaded and verified."
+                exit 0
+              fi
               # Roughly 21 GB. --continue-at resumes, so re-running this Job
               # after an interruption costs only the remainder.
               curl --fail --location --retry 5 --connect-timeout 20 \
@@ -48,29 +70,95 @@ spec:
               curl --fail --location --retry 5 --output "$archive.md5" "$url.md5"
               # Hours of matching against a corrupt archive would be wasted, and
               # the failure would look like thin evidence rather than a bad
-              # download, so verify before handing it to the prepare step.
+              # download, so verify before anything else reads it.
               expected=$(awk '{print $1; exit}' "$archive.md5")
               actual=$(md5sum "$archive" | awk '{print $1}')
               echo "expected $expected"
               echo "actual   $actual"
               [ "$expected" = "$actual" ]
+              touch "$archive.verified"
           volumeMounts:
             - name: gps-archive
               mountPath: /gps
-      containers:
-        - name: prepare
+
+        - name: prefilter
           image: rpattn/openlooper-evidence:latest
           imagePullPolicy: Always
+          command: ["/bin/sh", "-eu", "-c"]
           args:
-            - python
-            - /app/prepare_evidence.py
-            - --pbf=/evidence/evidence-region.osm.pbf
-            - --gps-archive=/gps/gpx-planet-2013-04-09.tar.xz
-            - --output=/evidence/route-use-evidence.sqlite.next
-            - --report=/evidence/build-report.json.next
-            # Streaming and decompressing the archive stays on one core and sets
-            # the floor on the whole build, so more than eight buys nothing.
-            - --workers=8
+            - |
+              if [ -s /gps/filtered.tar ] && [ -s /gps/filtered.provenance.json ]; then
+                echo "Prefiltered intermediate already present; keeping it."
+                echo "Delete /gps/filtered.tar to redo this after changing the region."
+                exit 0
+              fi
+              python /app/prefilter_gps.py \
+                --gps-archive /gps/gpx-planet-2013-04-09.tar.xz \
+                --output /gps/filtered.tar \
+                --provenance /gps/filtered.provenance.json \
+                --bbox="$(cat /config/evidence-bbox)"
+          volumeMounts:
+            - name: gps-archive
+              mountPath: /gps
+            - name: region
+              mountPath: /config
+          resources:
+            requests:
+              cpu: "1"
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+
+        - name: tile
+          image: iboates/osmium:1.18.0
+          command: ["/bin/sh", "/scripts/tile_region.sh"]
+          args:
+            - /evidence/evidence-region.osm.pbf
+            - /evidence/tiles
+            - $(EVIDENCE_BBOX)
+            - $(TILE_COLS)
+            - $(TILE_ROWS)
+            - $(TILE_MARGIN)
+          env:
+            - name: EVIDENCE_BBOX
+              valueFrom:
+                configMapKeyRef: { name: openlooper-region, key: evidence-bbox }
+            - name: TILE_COLS
+              valueFrom:
+                configMapKeyRef: { name: openlooper-region, key: tile-cols }
+            - name: TILE_ROWS
+              valueFrom:
+                configMapKeyRef: { name: openlooper-region, key: tile-rows }
+            - name: TILE_MARGIN
+              valueFrom:
+                configMapKeyRef: { name: openlooper-region, key: tile-margin }
+          volumeMounts:
+            - name: evidence-data
+              mountPath: /evidence
+            - name: tile-script
+              mountPath: /scripts
+          resources:
+            requests:
+              cpu: "1"
+              memory: 1Gi
+            limits:
+              memory: 6Gi
+
+      containers:
+        - name: build
+          image: rpattn/openlooper-evidence:latest
+          imagePullPolicy: Always
+          command: ["/app/build_tiles.sh"]
+          args:
+            - /evidence/tiles
+            - /evidence/evidence-region.osm.pbf
+            - /gps/filtered.tar
+            - /gps/filtered.provenance.json
+            - /evidence/route-use-evidence.sqlite.next
+            - /evidence/build-report.json.next
+            # Matching is parallel, but reading the intermediate is not, so more
+            # than eight workers buys little.
+            - "8"
           volumeMounts:
             - name: evidence-data
               mountPath: /evidence
@@ -79,19 +167,13 @@ spec:
               readOnly: true
           resources:
             requests:
-              # A scheduling floor, not a cap: there is no CPU limit, so the
-              # eight workers still use whatever the node has spare. Set high
-              # enough to matter, low enough that the Job is not left Pending
-              # alongside the three Deployments.
               cpu: "4"
               memory: 4Gi
-            # The parent holds an STRtree over every highway way in the region
-            # plus a per-section evidence dict, and eight forked workers each
-            # dirty the shared geometry pages as they touch refcounts. Measured
-            # at 2.04 GiB for a 71 MB evidence PBF — about 29x the file, and
-            # roughly 50x once the GPS pass is included. On this 16 GB node a
-            # 12 Gi ceiling puts the evidence region near 240 MB of PBF. The
-            # routing region is not bound by this.
+            # Peak is set by the largest tile, not the region: preparation runs
+            # about 29x a tile's PBF for the network phase and roughly 50x for a
+            # full build. The tiling step prints a projection per tile — raise
+            # tile-cols/tile-rows rather than this, which is already most of a
+            # 16 GB node.
             limits:
               memory: 12Gi
       volumes:
@@ -103,3 +185,6 @@ spec:
           hostPath:
             path: /srv/openlooper/gps
             type: DirectoryOrCreate
+        - name: tile-script
+          configMap:
+            name: openlooper-tile-script

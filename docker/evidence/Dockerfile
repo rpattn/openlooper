@@ -7,5 +7,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
-COPY prepare_evidence.py evidence_service.py /app/
+COPY prepare_evidence.py prefilter_gps.py merge_evidence.py evidence_service.py /app/
+COPY build_tiles.sh /app/
 CMD ["python", "/app/evidence_service.py"]
