@@ -161,10 +161,9 @@ the Midlands, and step 4 repeated with a wider bbox when you want more.
    Wait for it to finish before starting step 4. Confirm with
    `kubectl -n openlooper get pods` showing `1/1 Running`.
 
-   This is the step most likely to fail on 16 GB. If it is OOM-killed, add swap
-   before retrying — a staged tile build tolerates it — and if it still fails,
-   set `routing-url` to `england` or empty it to merge the county list, then
-   re-run step 2.
+   This is the step most likely to fail on 16 GB. If it is OOM-killed, set
+   `routing-url` to `england` (1.58 GB) or empty it to merge the county list,
+   then re-run step 2. Do not reach for swap — see below.
 
 4. **Evidence database** — the second long build. Downloads and md5-checks the
    21 GB GPS archive, prefilters it once, cuts the region into tiles, builds
@@ -422,11 +421,17 @@ to Great Britain by EPSG:27700.
 about the same memory as a county one.
 
 **Routing, building: uncertain.** The tile build is a different workload from
-serving, and 2.1 GB of PBF against a 12 Gi ceiling is not comfortable. Try it —
-and unlike evidence matching, this one is worth giving swap. There is 500 GB of
-disk, a 32 GB swap file costs nothing, and a staged tile build is not the
-pathological random-access workload that would make swapping useless. If it
-still fails, fall back to `england` (1.58 GB) or a group of counties.
+serving, and 2.1 GB of PBF against a 12 Gi ceiling is not comfortable. If it
+fails, fall back to `england` (1.58 GB) or a group of counties.
+
+**Not by adding swap**, which earlier revisions of this document suggested. It
+is bad advice on a Kubernetes node for two independent reasons. kubelet runs
+with `failSwapOn: true` by default, so enabling swap risks it refusing to start
+on the next restart and taking every other workload on the node with it. And it
+would not help even then: a container is bounded by its cgroup `memory.max`,
+which does not draw on host swap unless the NodeSwap feature and a `memory.swap.max`
+are configured too. The cost of getting this wrong is the rest of the cluster;
+the cost of a smaller routing region is some coverage.
 
 **Evidence: no longer bounded by memory.** A single-process build peaks at
 roughly 50x its PBF, which would be about 100 GiB UK-wide. The evidence region
