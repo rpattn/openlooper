@@ -121,11 +121,16 @@ spec:
               echo "Routing PBF   $(ls -l /routing/local-region.osm.pbf | awk '{print $5}') bytes"
               echo "Evidence PBF  $(ls -l /evidence/evidence-region.osm.pbf | awk '{print $5}') bytes"
               echo
-              # Preparation memory runs about 29x the evidence PBF. Well past
-              # the Job's 24 GiB ceiling is worth knowing before starting a
-              # multi-hour build that ends in an OOM kill.
+              # 50x, matching tile_region.sh: 29x is the measured network phase
+              # alone, and a full build adds the GPS pass's accumulator and the
+              # forked workers on top. Understating this is worse than useless,
+              # because it is read to decide a grid.
               awk -v b="$(ls -l /evidence/evidence-region.osm.pbf | awk '{print $5}')" \
-                'BEGIN { printf "Projected evidence preparation peak: %.1f GiB\n", b*29/1073741824 }'
+                'BEGIN {
+                   printf "As ONE tile this region would peak near %.1f GiB.\n", b*50/1073741824
+                   printf "The Job ceiling is 12 GiB, so it needs at least %d tiles.\n", int(b*50/1073741824/12)+1
+                   print  "The tiling step in Job 52 prints a per-tile figure; that is the one to act on."
+                 }'
               sha256sum /routing/local-region.osm.pbf /evidence/evidence-region.osm.pbf
           volumeMounts:
             - name: routing-data
