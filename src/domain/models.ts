@@ -155,6 +155,17 @@ export type ViewportEvidenceState = {
   count: number;
 };
 export type SheetState = "collapsed" | "half" | "full";
+/**
+ * What one undo step restores: the shape of the route and the way it is being
+ * edited. Route results are left out deliberately — the plan is the source of
+ * truth, and stepping back reroutes through the points it restores.
+ */
+export type PlanSnapshot = {
+  plan: RoutePlan;
+  sketchCompleted: boolean;
+  loopTuned: boolean;
+  activeTool: PlannerState["activeTool"];
+};
 export type PlannerState = {
   camera: MapCamera;
   mapStyle: MapStyleId;
@@ -170,6 +181,12 @@ export type PlannerState = {
   highlightedIssueId?: string;
   highlightedEdgeIndex?: number;
   profilePoint?: Coordinate;
+  /** How far along the route `profilePoint` sits, so the map and the profile
+   * chart can each drive the other from one position. */
+  profileKm?: number;
+  /** The distance the route had when the edit in flight started, so the summary
+   * can say what the edit changed rather than only what it produced. */
+  previousDistanceKm?: number;
   sheet: SheetState;
   loopSeed: number;
   sketchCompleted: boolean;
@@ -177,6 +194,11 @@ export type PlannerState = {
    * is rerouted through its current points rather than generated afresh, so a
    * preference change cannot throw away the shape being tuned. */
   loopTuned: boolean;
+  /** Edits that can be stepped back to, oldest first, and the ones stepped back
+   * from. Neither survives a reload: an undo into a route that is no longer on
+   * screen restores something the planner never saw. */
+  past: PlanSnapshot[];
+  future: PlanSnapshot[];
 };
 
 export const DEFAULT_PREFERENCES: RoutingPreferences = {

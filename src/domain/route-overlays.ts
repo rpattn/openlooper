@@ -1,5 +1,6 @@
 import { cumulativeDistances } from "./geometry";
 import type { EdgeAttributes, RouteOverlay, RouteResult } from "./models";
+import { formatSpeed, type UnitSystem } from "./units";
 
 export type OverlayBand = {
   beginIndex: number;
@@ -85,7 +86,7 @@ const ROADS: Bucket[] = [
   },
   {
     color: "#6b8ba4",
-    label: "Residential or service",
+    label: "Residential or service road",
     test: (e) =>
       ["residential", "service_other", "unclassified", "living_street"].includes(
         (e.roadClass ?? "").toLowerCase(),
@@ -93,24 +94,26 @@ const ROADS: Bucket[] = [
   },
   {
     color: "#efa00b",
-    label: "Secondary or tertiary",
+    label: "Secondary or local through road",
     test: (e) => ["secondary", "tertiary"].includes((e.roadClass ?? "").toLowerCase()),
   },
   {
     color: "#b3261e",
-    label: "Primary, trunk or motorway",
+    label: "Main road, major road or motorway",
     test: (e) =>
       ["primary", "trunk", "motorway"].includes((e.roadClass ?? "").toLowerCase()),
   },
 ];
 
-function speedBuckets(): Bucket[] {
+/** The bands are fixed speeds; only the way they are written down changes. */
+function speedBuckets(units: UnitSystem): Bucket[] {
   const at = (edge: EdgeAttributes) => edge.speedKph;
+  const shown = (kph: number) => formatSpeed(kph, units);
   return [
-    { color: "#b3261e", label: "Under 8 km/h", test: (e) => (at(e) ?? -1) >= 0 && at(e)! < 8 },
-    { color: "#efa00b", label: "8–16 km/h", test: (e) => (at(e) ?? -1) < 16 && at(e) !== undefined },
-    { color: "#9bc53d", label: "16–25 km/h", test: (e) => (at(e) ?? -1) < 25 && at(e) !== undefined },
-    { color: "#2e9e6b", label: "25 km/h and above", test: (e) => at(e) !== undefined },
+    { color: "#b3261e", label: `Under ${shown(8)}`, test: (e) => (at(e) ?? -1) >= 0 && at(e)! < 8 },
+    { color: "#efa00b", label: `${shown(8)} to ${shown(16)}`, test: (e) => (at(e) ?? -1) < 16 && at(e) !== undefined },
+    { color: "#9bc53d", label: `${shown(16)} to ${shown(25)}`, test: (e) => (at(e) ?? -1) < 25 && at(e) !== undefined },
+    { color: "#2e9e6b", label: `${shown(25)} and above`, test: (e) => at(e) !== undefined },
   ];
 }
 
@@ -151,6 +154,7 @@ export function overlayRender(
   route: RouteResult,
   overlay: RouteOverlay,
   accent: string,
+  units: UnitSystem = "metric",
 ): OverlayRender {
   if (overlay === "route")
     return {
@@ -168,7 +172,7 @@ export function overlayRender(
   if (overlay === "surface") return bucketed(route, SURFACE, "Surface not recorded");
   if (overlay === "roads") return bucketed(route, ROADS, "Road type not recorded");
   if (overlay === "speed") {
-    const render = bucketed(route, speedBuckets(), "Speed not recorded");
+    const render = bucketed(route, speedBuckets(units), "Speed not recorded");
     return route.edges.some((edge) => edge.attributes.speedKph !== undefined)
       ? render
       : {

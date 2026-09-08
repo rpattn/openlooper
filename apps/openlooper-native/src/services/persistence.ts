@@ -22,8 +22,15 @@ export async function restorePlanner(): Promise<PlannerState | undefined> {
       progress: undefined,
       error: undefined,
       profilePoint: undefined,
+      profileKm: undefined,
+      previousDistanceKm: undefined,
       highlightedIssueId: undefined,
       highlightedEdgeIndex: undefined,
+      // Undo steps back through edits made to a route that is on screen. After a
+      // reload there is nothing on screen to step back from, so the stack starts
+      // empty rather than restoring shapes the planner never saw.
+      past: [],
+      future: [],
     };
   } catch {
     return undefined;
@@ -46,8 +53,12 @@ export async function persistPlanner(state: PlannerState): Promise<void> {
     progress: undefined,
     error: undefined,
     profilePoint: undefined,
+    profileKm: undefined,
+    previousDistanceKm: undefined,
     highlightedIssueId: undefined,
     highlightedEdgeIndex: undefined,
+    past: [],
+    future: [],
   };
   try {
     await AsyncStorage.setItem(KEY, JSON.stringify({ format: FORMAT, state: clean }));

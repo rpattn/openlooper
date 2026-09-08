@@ -6,6 +6,7 @@ import type {
   RouteResult,
 } from "./models";
 import { randomId } from "./id";
+import { roadClassName, surfaceName } from "./vocabulary";
 
 function stringValue(
   edge: Record<string, unknown>,
@@ -89,7 +90,7 @@ function findings(attributes: EdgeAttributes, activity: Activity): Finding[] {
       severity: road.includes("motorway") ? "high" : "warning",
       confidence: "potential",
       title: "Potential issue: major-road section",
-      explanation: `Recorded as ${attributes.roadClass ?? "a major road"}; it may be unpleasant for this activity.`,
+      explanation: `Recorded as a ${(roadClassName(attributes.roadClass) ?? "major road").toLowerCase()}; it may be unpleasant for this activity.`,
     });
   if (
     attributes.unpaved ||
@@ -106,7 +107,7 @@ function findings(attributes: EdgeAttributes, activity: Activity): Finding[] {
         : attributes.unpaved
           ? "Potential issue: unpaved section"
           : "Potential issue: rough surface",
-      explanation: `Valhalla records ${attributes.surface ?? "an unpaved surface"}; suitability depends on conditions and your equipment.`,
+      explanation: `Recorded as ${(surfaceName(attributes.surface) ?? "an unpaved surface").toLowerCase()}; suitability depends on conditions and your equipment.`,
     });
   const gradeMissing =
     (attributes.maxUpwardGrade ?? 0) <= -32000 ||

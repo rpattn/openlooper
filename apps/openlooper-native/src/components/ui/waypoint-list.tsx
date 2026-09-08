@@ -19,7 +19,9 @@ export function WaypointList({ rows, accent, editable, onMove, onDelete, onSelec
           </View>
           <View style={styles.grow}>
             <Text style={styles.title}>{row.title}</Text>
-            <Text style={styles.subtitle}>{row.subtitle}</Text>
+            <Text style={styles.subtitle}>
+              {row.legLabel ? `${row.legLabel} from previous` : row.subtitle}
+            </Text>
           </View>
           {editable && !row.locked && (
             <View style={styles.actions}>

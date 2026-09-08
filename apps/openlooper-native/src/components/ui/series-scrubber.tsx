@@ -3,6 +3,8 @@ import { PanResponder, StyleSheet, Text, View, type LayoutChangeEvent } from 're
 
 import { COLOR } from '@/theme';
 import type { Coordinate } from '@/domain/models';
+import { formatDistance } from '../../../../../src/domain/units';
+import { useUnits } from '@/state/settings-context';
 import type { SeriesPoint } from '../../../../../src/domain/route-series';
 import { indexAtRatio } from './series-model';
 
@@ -13,7 +15,10 @@ export type SeriesScrubberProps = {
   label: string;
   /** Formats the value under the cursor, units included. */
   format: (value: number) => string;
-  onPoint: (coordinate?: Coordinate) => void;
+  /** Where the cursor sits when something other than this chart put it there —
+   * a touch on the map. Undefined means nothing is selected. */
+  cursorKm?: number;
+  onPoint: (coordinate?: Coordinate, distanceKm?: number) => void;
   /** The platform's chart, stretched to fill the plot area. */
   children: ReactNode;
 };
@@ -29,26 +34,43 @@ export function SeriesScrubber({
   height,
   label,
   format,
+  cursorKm,
   onPoint,
   children,
 }: SeriesScrubberProps) {
+  const units = useUnits();
   const [width, setWidth] = useState(0);
-  const [index, setIndex] = useState<number>();
   const size = useRef(0);
   const emit = useRef(onPoint);
   emit.current = onPoint;
   const count = points.length;
+  // The cursor is wherever the shared position says it is, whichever end put it
+  // there. Dragging here reports a position rather than keeping its own, so the
+  // map and the chart can never disagree about where along the route this is.
+  const index = useMemo(() => {
+    if (cursorKm === undefined || !count) return undefined;
+    let best = 0;
+    let bestGap = Infinity;
+    points.forEach((point, position) => {
+      const gap = Math.abs(point.distanceKm - cursorKm);
+      if (gap < bestGap) {
+        bestGap = gap;
+        best = position;
+      }
+    });
+    return best;
+  }, [count, cursorKm, points]);
 
   const responder = useMemo(() => {
+    let reported: number | undefined;
     const scrub = (x: number) => {
       const next = indexAtRatio(count, x / (size.current || 1));
       // Re-rendering the map marker on every touch event is wasted work, so
       // only report a genuinely new position.
-      setIndex((previous) => {
-        if (previous === next) return previous;
-        emit.current(points[next]?.coordinate);
-        return next;
-      });
+      if (reported === next) return;
+      reported = next;
+      const point = points[next];
+      emit.current(point?.coordinate, point?.distanceKm);
     };
     return PanResponder.create({
       // Capture before the chart so a drag never reaches the surrounding scroll.
@@ -88,16 +110,13 @@ export function SeriesScrubber({
       <View style={styles.readoutRow}>
         <Text style={styles.readout}>
           {selected
-            ? `${selected.distanceKm.toFixed(1)} km · ${format(selected.value)}`
+            ? `${formatDistance(selected.distanceKm, units)} · ${format(selected.value)}`
             : 'Drag across the profile to locate it on the map.'}
         </Text>
         {selected && (
           <Text
             accessibilityRole="button"
-            onPress={() => {
-              setIndex(undefined);
-              emit.current(undefined);
-            }}
+            onPress={() => emit.current(undefined)}
             style={[styles.clear, { color: accent }]}
           >
             Clear

@@ -5,6 +5,7 @@ import type {
   InteractionMode,
   MapStyleId,
   PlannerState,
+  PlanSnapshot,
   RouteOverlay,
   RouteAlternative,
   RoutePlan,
@@ -38,7 +39,53 @@ export const initialState: PlannerState = {
   loopSeed: 0,
   sketchCompleted: false,
   loopTuned: false,
+  past: [],
+  future: [],
 };
+
+/** How many edits can be stepped back through. Deep enough to cover a stretch of
+ * tuning, shallow enough that the stack stays small. */
+const HISTORY_LIMIT = 30;
+
+/** The part of the state an undo step puts back. */
+export function planSnapshot(state: PlannerState): PlanSnapshot {
+  return {
+    plan: state.plan,
+    sketchCompleted: state.sketchCompleted,
+    loopTuned: state.loopTuned,
+    activeTool: state.activeTool,
+  };
+}
+
+/**
+ * Marks a state change as one edit, so it can be stepped back from. Taking a new
+ * step clears anything that was stepped back from: the route has branched away
+ * from it and redoing onto this shape would produce a plan that never existed.
+ */
+function recorded(previous: PlannerState, next: PlannerState): PlannerState {
+  return {
+    ...next,
+    past: [...previous.past, planSnapshot(previous)].slice(-HISTORY_LIMIT),
+    future: [],
+  };
+}
+
+/** Puts a snapshot back, dropping the readings that belong to the route it
+ * replaces. The route itself is recalculated by the planner. */
+function applySnapshot(state: PlannerState, snapshot: PlanSnapshot): PlannerState {
+  return {
+    ...state,
+    plan: snapshot.plan,
+    sketchCompleted: snapshot.sketchCompleted,
+    loopTuned: snapshot.loopTuned,
+    activeTool: snapshot.activeTool,
+    error: undefined,
+    highlightedIssueId: undefined,
+    highlightedEdgeIndex: undefined,
+    profilePoint: undefined,
+    profileKm: undefined,
+  };
+}
 
 export type Action =
   | { type: "restore"; state: PlannerState }
@@ -69,7 +116,9 @@ export type Action =
   | { type: "tool"; tool: PlannerState["activeTool"] }
   | { type: "highlightIssue"; id?: string }
   | { type: "highlightEdge"; index?: number }
-  | { type: "profilePoint"; coordinate?: Coordinate }
+  | { type: "profilePoint"; coordinate?: Coordinate; distanceKm?: number }
+  | { type: "undo" }
+  | { type: "redo" }
   | { type: "sheet"; sheet: SheetState }
   | { type: "loopSeed" }
   | { type: "finishSketch" }
@@ -95,7 +144,7 @@ export function reducer(state: PlannerState, action: Action): PlannerState {
     case "loopTuned":
       return { ...state, loopTuned: action.tuned };
     case "mode":
-      return {
+      return recorded(state, {
         ...state,
         plan: { ...state.plan, mode: action.mode, waypoints: [] },
         selectedRoute: undefined,
@@ -106,7 +155,7 @@ export function reducer(state: PlannerState, action: Action): PlannerState {
         highlightedEdgeIndex: undefined,
         sketchCompleted: false,
         loopTuned: false,
-      };
+      });
     case "activity":
       return {
         ...state,
@@ -137,17 +186,24 @@ export function reducer(state: PlannerState, action: Action): PlannerState {
         },
       };
     case "waypoints":
-      return {
+      // Every edit to the route — a tap, a drag, a reorder, a generated shape —
+      // arrives here, so this is the one place a step back has to be recorded.
+      return recorded(state, {
         ...state,
         plan: { ...state.plan, waypoints: action.waypoints },
         error: undefined,
-      };
+      });
     case "routeStart":
       return {
         ...state,
         loading: true,
         progress: action.progress,
         error: undefined,
+        // A cursor placed on the old route points at a distance the new one has
+        // not got, so it goes rather than lingering over stale geometry.
+        profilePoint: undefined,
+        profileKm: undefined,
+        previousDistanceKm: state.selectedRoute?.distanceKm,
         highlightedIssueId: undefined,
         highlightedEdgeIndex: undefined,
         selectedRoute: state.selectedRoute
@@ -215,7 +271,29 @@ export function reducer(state: PlannerState, action: Action): PlannerState {
         highlightedIssueId: undefined,
       };
     case "profilePoint":
-      return { ...state, profilePoint: action.coordinate };
+      return {
+        ...state,
+        profilePoint: action.coordinate,
+        profileKm: action.coordinate ? action.distanceKm : undefined,
+      };
+    case "undo": {
+      const snapshot = state.past.at(-1);
+      if (!snapshot) return state;
+      return {
+        ...applySnapshot(state, snapshot),
+        past: state.past.slice(0, -1),
+        future: [planSnapshot(state), ...state.future].slice(0, HISTORY_LIMIT),
+      };
+    }
+    case "redo": {
+      const snapshot = state.future[0];
+      if (!snapshot) return state;
+      return {
+        ...applySnapshot(state, snapshot),
+        past: [...state.past, planSnapshot(state)].slice(-HISTORY_LIMIT),
+        future: state.future.slice(1),
+      };
+    }
     case "sheet":
       return { ...state, sheet: action.sheet };
     case "loopSeed":
@@ -223,7 +301,7 @@ export function reducer(state: PlannerState, action: Action): PlannerState {
     case "finishSketch":
       return { ...state, sketchCompleted: true, activeTool: "add" };
     case "clear":
-      return {
+      return recorded(state, {
         ...state,
         plan: { ...state.plan, waypoints: [] },
         selectedRoute: undefined,
@@ -232,9 +310,11 @@ export function reducer(state: PlannerState, action: Action): PlannerState {
         activeTool: "start",
         highlightedIssueId: undefined,
         highlightedEdgeIndex: undefined,
+        profilePoint: undefined,
+        profileKm: undefined,
         sketchCompleted: false,
         loopTuned: false,
-      };
+      });
   }
 }
 

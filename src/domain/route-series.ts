@@ -1,20 +1,36 @@
 import { cumulativeDistances } from "./geometry";
 import type { Coordinate, RouteOverlay, RouteResult } from "./models";
+import {
+  elevationUnit,
+  speedUnit,
+  toElevation,
+  toSpeed,
+  type UnitSystem,
+} from "./units";
 
 export type SeriesPoint = {
   distanceKm: number;
   value: number;
   coordinate: Coordinate;
 };
+/** What the values are, which is what says how to convert them. */
+export type SeriesKind = "elevation" | "gradient" | "speed";
 export type RouteSeries = {
   points: SeriesPoint[];
   label: string;
   unit: string;
   /** Decimal places for readouts and axis labels. */
   precision: number;
+  kind: SeriesKind;
 };
 
-const EMPTY: RouteSeries = { points: [], label: "Elevation", unit: " m", precision: 0 };
+const EMPTY: RouteSeries = {
+  points: [],
+  label: "Elevation",
+  unit: " m",
+  precision: 0,
+  kind: "elevation",
+};
 
 function elevationSeries(route: RouteResult): RouteSeries {
   return {
@@ -26,6 +42,7 @@ function elevationSeries(route: RouteResult): RouteSeries {
     label: "Elevation",
     unit: " m",
     precision: 0,
+    kind: "elevation",
   };
 }
 
@@ -50,6 +67,7 @@ function gradientSeries(route: RouteResult): RouteSeries {
     label: "Gradient",
     unit: "%",
     precision: 1,
+    kind: "gradient",
   };
 }
 
@@ -68,7 +86,7 @@ function speedSeries(route: RouteResult): RouteSeries | undefined {
     }
   }
   return points.length
-    ? { points, label: "Predicted speed", unit: " km/h", precision: 0 }
+    ? { points, label: "Predicted speed", unit: " km/h", precision: 0, kind: "speed" }
     : undefined;
 }
 
@@ -86,4 +104,18 @@ export function routeSeries(
   if (overlay === "gradient" && route.elevation.length > 2) return gradientSeries(route);
   if (overlay === "speed") return speedSeries(route) ?? elevationSeries(route);
   return elevationSeries(route);
+}
+
+/**
+ * The same series read in the planner's chosen units. Gradients are a ratio and
+ * so are the same everywhere; only the two measured series convert.
+ */
+export function convertSeries(series: RouteSeries, units: UnitSystem): RouteSeries {
+  if (units === "metric" || series.kind === "gradient") return series;
+  const convert = series.kind === "elevation" ? toElevation : toSpeed;
+  return {
+    ...series,
+    points: series.points.map((point) => ({ ...point, value: convert(point.value, units) })),
+    unit: series.kind === "elevation" ? ` ${elevationUnit(units)}` : ` ${speedUnit(units)}`,
+  };
 }

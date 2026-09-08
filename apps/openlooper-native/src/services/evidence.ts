@@ -87,3 +87,29 @@ export async function routeEvidenceBatch(
     return new Map(routes.map(({ id }) => [id, unavailable()]));
   }
 }
+
+/**
+ * Recorded use for everything in view, rather than for one computed route. This
+ * is what makes the evidence usable while a route is still being drawn: the
+ * roads people are recorded on can be seen before anything is planned through
+ * them.
+ */
+export async function viewportEvidence(
+  bbox: [number, number, number, number],
+  signal?: AbortSignal,
+): Promise<GeoJSON.FeatureCollection> {
+  const query = new URLSearchParams({ bbox: bbox.join(',') });
+  const response = await fetch(`${BASE}/evidence/sections?${query}`, { signal });
+  const data = (await response.json().catch(() => ({}))) as GeoJSON.FeatureCollection & {
+    error?: string;
+    code?: string;
+  };
+  if (!response.ok) {
+    const error = new Error(data.error ?? `Evidence request failed (${response.status}).`) as Error & {
+      code?: string;
+    };
+    error.code = data.code;
+    throw error;
+  }
+  return data;
+}

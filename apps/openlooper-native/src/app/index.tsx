@@ -1,5 +1,6 @@
+import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { StyleSheet, useWindowDimensions, View } from 'react-native';
+import { Platform, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, {
   Easing,
@@ -10,14 +11,17 @@ import Animated, {
 
 import type {
   Activity,
+  Coordinate,
   CreationMode,
   InteractionMode,
   PlannerState,
   RoutePlan,
 } from '@/domain/models';
 import { ACTIVITY } from '@/domain/models';
+import { distanceMarkers } from '@/domain/distance-markers';
+import { distanceAlong } from '@/domain/route-positions';
 import { overlayRender, overlaySpans } from '../../../../src/domain/route-overlays';
-import { routeSeries } from '../../../../src/domain/route-series';
+import { convertSeries, routeSeries } from '../../../../src/domain/route-series';
 import type { SavedRoutePage } from '@/domain/saved-route';
 import { savedRoute, suggestedName } from '@/domain/saved-route';
 import { HomeScreen } from '@/components/home-screen';
@@ -25,12 +29,14 @@ import { MapControls } from '@/components/map-controls';
 import { RouteBar } from '@/components/route-bar';
 import { SHEET_FRACTION, sheetHeightFor } from '@/components/sheet-detents';
 import { PlannerMap } from '@/components/planner-map';
-import { PlannerSheet } from '@/components/planner-sheet';
+import { DESKTOP_PANEL, PlannerSheet } from '@/components/planner-sheet';
 import { Dialog } from '@/components/ui/dialog';
 import { exportGpx } from '@/services/gpx';
 import { deleteRoute, listRoutes, loadRoute, putRoute } from '@/services/route-store';
 import { initialPlannerState } from '@/state/planner';
 import { usePlanner } from '@/state/use-planner';
+import { useUnits } from '@/state/settings-context';
+import { useViewportEvidence, type Bounds } from '@/state/use-viewport-evidence';
 
 const PAGE_SIZE = 4;
 const OPEN = { duration: 420, easing: Easing.out(Easing.cubic) };
@@ -57,6 +63,8 @@ function signature(plan: RoutePlan, routeId?: string) {
 }
 
 export default function PlannerScreen() {
+  const router = useRouter();
+  const units = useUnits();
   const planner = usePlanner();
   const { state, dispatch } = planner;
   const { height: windowHeight, width } = useWindowDimensions();
@@ -89,6 +97,12 @@ export default function PlannerScreen() {
   const [draft, setDraft] = useState(false);
   const checkedDraft = useRef(false);
 
+  /** Recorded use drawn under the map while planning, rather than only as a
+   * colouring of a route already chosen. */
+  const [underlay, setUnderlay] = useState(false);
+  const [bounds, setBounds] = useState<Bounds>();
+  const evidence = useViewportEvidence(underlay && view === 'planner', bounds);
+
   // Roughly how much of the map the sheet covers, used both to fit routes clear
   // of it and to centre a located point in the strip that stays visible.
   const sheetInset = useCallback(
@@ -96,6 +110,9 @@ export default function PlannerScreen() {
     [desktop, windowHeight],
   );
   const bottomInset = sheetInset(state.sheet);
+  /** What the desktop panel covers on the left, so routes are framed beside it
+   * rather than behind it. */
+  const leftInset = desktop ? DESKTOP_PANEL.left + DESKTOP_PANEL.width : 0;
   // Drives the floating controls so they ride above the sheet as it is dragged.
   // Seeded at the half detent the planner opens on, so nothing jumps on mount.
   const sheetHeight = useSharedValue(windowHeight * SHEET_FRACTION.half);
@@ -105,6 +122,38 @@ export default function PlannerScreen() {
     // safe area rather than tracking a sheet.
     if (desktop) sheetHeight.value = insets.bottom;
   }, [desktop, insets.bottom, sheetHeight]);
+
+  // Keyboard editing, on the one platform that has a keyboard. Undo is the
+  // shortcut people reach for without being told it exists, so it is the one
+  // worth having even though every action is also a button.
+  useEffect(() => {
+    if (Platform.OS !== 'web' || view !== 'planner') return;
+    function onKey(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      // Never steal a key from the search field or the save dialog.
+      if (target?.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target?.tagName ?? ''))
+        return;
+      const accel = event.metaKey || event.ctrlKey;
+      if (accel && event.key.toLowerCase() === 'z') {
+        event.preventDefault();
+        if (event.shiftKey) planner.redo();
+        else planner.undo();
+        return;
+      }
+      if (accel && event.key.toLowerCase() === 'y') {
+        event.preventDefault();
+        planner.redo();
+        return;
+      }
+      if (event.key === 'Escape') {
+        dispatch({ type: 'highlightEdge' });
+        dispatch({ type: 'highlightIssue' });
+        dispatch({ type: 'profilePoint' });
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [dispatch, planner, view]);
 
   useEffect(() => {
     if (!planner.restored || checkedDraft.current) return;
@@ -241,17 +290,47 @@ export default function PlannerScreen() {
   const overlay = useMemo(
     () =>
       state.selectedRoute
-        ? overlayRender(state.selectedRoute, state.overlay, ACTIVITY[state.plan.activity].color)
+        ? overlayRender(
+            state.selectedRoute,
+            state.overlay,
+            ACTIVITY[state.plan.activity].color,
+            units,
+          )
         : { bands: [], legend: [] },
-    [state.overlay, state.plan.activity, state.selectedRoute],
+    [state.overlay, state.plan.activity, state.selectedRoute, units],
   );
   const series = useMemo(
-    () => routeSeries(state.selectedRoute, state.overlay),
-    [state.overlay, state.selectedRoute],
+    () => convertSeries(routeSeries(state.selectedRoute, state.overlay), units),
+    [state.overlay, state.selectedRoute, units],
   );
   const spans = useMemo(
     () => (state.selectedRoute ? overlaySpans(state.selectedRoute, overlay.bands) : []),
     [overlay.bands, state.selectedRoute],
+  );
+  // Marks only belong on the plain route: over a colouring they compete with the
+  // thing being read, and the colouring already has a legend of its own.
+  const marks = useMemo(
+    () => distanceMarkers(state.selectedRoute, units),
+    [state.selectedRoute, units],
+  );
+  const markers = state.overlay === 'route' ? marks : [];
+
+  /** Puts the profile cursor wherever the route was touched, so reading the map
+   * and reading the chart are the same act from either end. */
+  const placeProfile = useCallback(
+    (coordinate?: Coordinate, distanceKm?: number) => {
+      if (!coordinate) {
+        dispatch({ type: 'profilePoint' });
+        return;
+      }
+      const route = state.selectedRoute;
+      dispatch({
+        type: 'profilePoint',
+        coordinate,
+        distanceKm: distanceKm ?? (route ? distanceAlong(route.geometry, coordinate) : undefined),
+      });
+    },
+    [dispatch, state.selectedRoute],
   );
 
   // The map never unmounts, so opening a route slides the home page down off it
@@ -274,6 +353,7 @@ export default function PlannerScreen() {
         camera={state.camera}
         mapStyle={state.mapStyle}
         bottomInset={view === 'planner' ? bottomInset : 0}
+        leftInset={view === 'planner' ? leftInset : 0}
         waypoints={state.plan.waypoints}
         mode={state.plan.mode}
         active={view === 'planner'}
@@ -282,12 +362,29 @@ export default function PlannerScreen() {
         alternatives={state.alternatives}
         highlightedIssue={highlightedIssue}
         profilePoint={state.profilePoint}
+        markers={markers}
+        evidenceSections={evidence.sections}
         onMapPress={planner.mapPress}
         onWaypointPress={planner.waypointPress}
         onWaypointDelete={planner.removeWaypoint}
         onWaypointMove={planner.moveWaypoint}
         onIssuePress={(id) => dispatch({ type: 'highlightIssue', id })}
-        onEdgePress={(index) => dispatch({ type: 'highlightEdge', index })}
+        onEdgePress={(index, coordinate) => {
+          dispatch({ type: 'highlightEdge', index });
+          // Touching the route also says where on the profile that is, so the
+          // chart and the map each answer for the other.
+          const edge = state.selectedRoute?.edges[index];
+          const middle =
+            coordinate ??
+            (edge && state.selectedRoute
+              ? state.selectedRoute.geometry[
+                  Math.floor((edge.beginIndex + edge.endIndex) / 2)
+                ]
+              : undefined);
+          if (middle) placeProfile(middle);
+        }}
+        onRouteDrag={planner.dragRouteTo}
+        onBoundsChange={setBounds}
         onAlternativePress={planner.selectAlternative}
         onCameraChange={(center, zoom) => dispatch({ type: 'camera', center, zoom })}
       />
@@ -314,12 +411,22 @@ export default function PlannerScreen() {
           mapStyle={state.mapStyle}
           offset={sheetHeight}
           gap={14}
+          leftInset={desktop ? leftInset + DESKTOP_PANEL.gap : 14}
           fadeAt={windowHeight * SHEET_FRACTION.full}
           overlay={state.overlay}
           legend={overlay.legend}
           onOverlay={(value) => dispatch({ type: 'overlay', overlay: value })}
           locating={planner.locating}
           hasRoute={Boolean(state.selectedRoute)}
+          canUndo={state.past.length > 0}
+          canRedo={state.future.length > 0}
+          onUndo={planner.undo}
+          onRedo={planner.redo}
+          markSpacing={markers.length ? markers[0]!.km : undefined}
+          units={units}
+          underlay={underlay}
+          underlayStatus={evidence.status}
+          onUnderlay={() => setUnderlay((value) => !value)}
           interaction={state.interaction}
           onInteraction={(interaction) => dispatch({ type: 'interaction', interaction })}
           onMapStyle={(style) => dispatch({ type: 'mapStyle', style })}
@@ -347,11 +454,12 @@ export default function PlannerScreen() {
           onCancel={planner.cancel}
           onSelectAlternative={planner.selectAlternative}
           onReverse={() => planner.setWaypoints([...state.plan.waypoints].reverse())}
+          onOutAndBack={planner.outAndBack}
           onWaypoints={planner.editWaypoints}
           onClear={planner.clear}
           onIssue={(issue) => dispatch({ type: 'highlightIssue', id: issue.id })}
           onEdgeDismiss={() => dispatch({ type: 'highlightEdge' })}
-          onProfile={(coordinate) => dispatch({ type: 'profilePoint', coordinate })}
+          onProfile={placeProfile}
           onSheet={(sheet) => dispatch({ type: 'sheet', sheet })}
           onOverlay={(value) => dispatch({ type: 'overlay', overlay: value })}
           onDismiss={requestBack}
@@ -399,6 +507,7 @@ export default function PlannerScreen() {
           onPage={setPageIndex}
           onOpen={(id, interaction) => void openRoute(id, interaction)}
           onDelete={(id) => void removeRoute(id)}
+          onSettings={() => router.push('/settings')}
         />
       </Animated.View>
 

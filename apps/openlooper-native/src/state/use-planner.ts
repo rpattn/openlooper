@@ -1,7 +1,7 @@
 import * as Location from 'expo-location';
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 
-import { closestSegment, distanceKm, routeBounds } from '../../../../src/domain/geometry';
+import { distanceKm, routeBounds } from '../../../../src/domain/geometry';
 import { loopSeeds, scaleLoop } from '../../../../src/domain/loops';
 import { analyzeRoute, mapEdges } from '../../../../src/domain/route-analysis';
 import {
@@ -17,6 +17,7 @@ import {
 import type {
   Activity,
   Coordinate,
+  PlannerState,
   CreationMode,
   InteractionMode,
   LoopScoringWeights,
@@ -27,6 +28,7 @@ import type {
 } from '@/domain/models';
 import { waypoint } from '@/domain/models';
 import type { SavedRoute } from '@/domain/saved-route';
+import { insertionIndex } from '@/domain/route-positions';
 import { closedLoop, editableWaypoints, loopAnchors, openLoop } from '@/domain/waypoints';
 import { routeEvidence, routeEvidenceBatch } from '@/services/evidence';
 import { persistPlanner, restorePlanner } from '@/services/persistence';
@@ -94,6 +96,8 @@ export function usePlanner() {
   const currentState = useRef(state);
   const controller = useRef<AbortController | undefined>(undefined);
   const requestId = useRef(0);
+  /** The state the last undo or redo was taken from, so one press is one step. */
+  const stepped = useRef<PlannerState | undefined>(undefined);
   currentState.current = state;
 
   useEffect(() => {
@@ -201,16 +205,12 @@ export function usePlanner() {
       }
       // Slot the new point into the leg it was tapped beside, the same way the
       // A to B add tool does, instead of tacking it onto the end.
-      const segment = closestSegment(current.selectedRoute.geometry, coordinate);
-      const leg = current.selectedRoute.legs.findIndex((item) => segment <= item.endIndex);
-      const insertion = leg >= 0 ? Math.min(leg + 1, loop.length) : loop.length;
+      const insertion = insertionIndex(current.selectedRoute, loop, coordinate, loop.length, true);
       routeLoop([...loop.slice(0, insertion), waypoint(coordinate, 'via'), ...loop.slice(insertion)]);
       return;
     }
     if (current.activeTool === 'add' && current.selectedRoute) {
-      const segment = closestSegment(current.selectedRoute.geometry, coordinate);
-      const leg = current.selectedRoute.legs.findIndex((item) => segment <= item.endIndex);
-      const insertion = leg >= 0 ? leg + 1 : points.length - 1;
+      const insertion = insertionIndex(current.selectedRoute, points, coordinate, points.length - 1);
       setWaypoints([...points.slice(0, insertion), waypoint(coordinate, 'via'), ...points.slice(insertion)]);
       return;
     }
@@ -230,6 +230,32 @@ export function usePlanner() {
       setWaypoints(next);
     }
   }, [discardRoute, routeLoop, setWaypoints]);
+
+  /**
+   * Pins the route to somewhere it does not currently go. `from` is where the
+   * line was taken hold of, which decides the stretch being reshaped; `to` is
+   * where it was let go, which becomes the new point. Reshaping this way needs
+   * no tool: it is the same insertion the add tool makes, aimed by the grab.
+   */
+  const dragRouteTo = useCallback((from: Coordinate, to: Coordinate) => {
+    const current = currentState.current;
+    if (current.interaction !== 'edit' || !current.selectedRoute) return;
+    if (current.plan.mode === 'loop') {
+      const loop = editableWaypoints(current);
+      if (!loop.length) return;
+      const insertion = insertionIndex(current.selectedRoute, loop, from, loop.length, true);
+      routeLoop([...loop.slice(0, insertion), waypoint(to, 'via'), ...loop.slice(insertion)]);
+      return;
+    }
+    const points = current.plan.waypoints;
+    if (points.length < 2) return;
+    const insertion = insertionIndex(current.selectedRoute, points, from, points.length - 1);
+    setWaypoints([
+      ...points.slice(0, insertion),
+      waypoint(to, 'via'),
+      ...points.slice(insertion),
+    ]);
+  }, [routeLoop, setWaypoints]);
 
   const waypointPress = useCallback((id: string) => {
     const current = currentState.current;
@@ -419,6 +445,47 @@ export function usePlanner() {
     editWaypoints(points.filter((_, position) => position !== index));
   }, [editWaypoints]);
 
+  /**
+   * Turns the route round on itself: out along what is planned, back the way it
+   * came. The points are mirrored rather than the geometry, so the return leg is
+   * routed properly and stays editable.
+   */
+  const outAndBack = useCallback(() => {
+    const current = currentState.current;
+    if (current.plan.mode === 'loop') return;
+    const points = current.plan.waypoints;
+    if (points.length < 2) return;
+    const back = [...points]
+      .slice(0, -1)
+      .reverse()
+      .map((point) => waypoint(point.coordinate, 'via'));
+    setWaypoints([...points, ...back]);
+  }, [setWaypoints]);
+
+  /**
+   * Steps one edit back, or forward again. The snapshot is read before the
+   * reducer moves the stack, so the route can be recalculated from the plan the
+   * planner is about to be looking at.
+   */
+  const step = useCallback((direction: 'undo' | 'redo') => {
+    const current = currentState.current;
+    // A held Ctrl+Z can fire faster than the planner re-renders, and stepping
+    // twice off one state would route the wrong snapshot. Stepping waits for the
+    // state to catch up instead.
+    if (stepped.current === current) return;
+    const snapshot = direction === 'undo' ? current.past.at(-1) : current.future[0];
+    if (!snapshot) return;
+    stepped.current = current;
+    controller.current?.abort();
+    requestId.current++;
+    dispatch({ type: direction });
+    if (snapshot.plan.waypoints.length >= 2) void calculate(snapshot.plan);
+    else dispatch({ type: 'alternatives', alternatives: [] });
+  }, [calculate]);
+
+  const undo = useCallback(() => step('undo'), [step]);
+  const redo = useCallback(() => step('redo'), [step]);
+
   const cancel = useCallback(() => {
     controller.current?.abort();
     requestId.current++;
@@ -535,7 +602,11 @@ export function usePlanner() {
     locate,
     mapPress,
     waypointPress,
+    dragRouteTo,
     moveWaypoint,
+    outAndBack,
+    undo,
+    redo,
     startAt,
     editWaypoints,
     removeWaypoint,

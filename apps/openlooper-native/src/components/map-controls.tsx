@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Animated, {
   Extrapolation,
   interpolate,
@@ -9,16 +9,23 @@ import Animated, {
 
 import { COLOR, RADIUS, SHADOW } from '@/theme';
 import { OVERLAY_LABEL, type LegendEntry } from '../../../../src/domain/route-overlays';
+import { distanceUnit, type UnitSystem } from '../../../../src/domain/units';
 import {
   MAP_STYLES,
   type InteractionMode,
   type MapStyleId,
   type RouteOverlay,
+  type ViewportEvidenceState,
 } from '@/domain/models';
 import { GlassSurface } from './ui/glass-surface';
 import { IconButton } from './ui/icon-button';
 
 const OVERLAYS: RouteOverlay[] = ['route', 'gradient', 'surface', 'roads', 'usage', 'speed'];
+/** The same purple the recorded-use colouring uses, so the underlay and the
+ * route colouring plainly come from one source. */
+const EVIDENCE_COLOR = '#6846a5';
+/** Height the legend strip occupies, so the buttons can sit clear of it. */
+const BAR_HEIGHT = 38;
 
 export type MapControlsProps = {
   accent: string;
@@ -31,8 +38,24 @@ export type MapControlsProps = {
   gap: number;
   /** Sheet height at which the controls have faded out behind the sheet. */
   fadeAt: number;
+  /** How far in the left column starts, so it stands clear of the desktop
+   * panel rather than sitting underneath it. */
+  leftInset: number;
   locating: boolean;
   hasRoute: boolean;
+  /** Whether there is an edit to step back from, or forward to. */
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
+  /** How far apart the distance marks are, in the planner's units. Absent when
+   * the route is too short to mark, or a colouring is being read instead. */
+  markSpacing?: number;
+  units: UnitSystem;
+  /** Recorded use drawn under the map while planning. */
+  underlay: boolean;
+  underlayStatus: ViewportEvidenceState;
+  onUnderlay: () => void;
   interaction: InteractionMode;
   onInteraction: (interaction: InteractionMode) => void;
   onMapStyle: (style: MapStyleId) => void;
@@ -50,8 +73,18 @@ export function MapControls({
   offset,
   gap,
   fadeAt,
+  leftInset,
   locating,
   hasRoute,
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
+  markSpacing,
+  units,
+  underlay,
+  underlayStatus,
+  onUnderlay,
   interaction,
   onInteraction,
   onMapStyle,
@@ -62,22 +95,24 @@ export function MapControls({
   const [open, setOpen] = useState<'style' | 'overlay' | undefined>();
   const editing = interaction === 'edit';
 
+  // Everything that explains what is on the map, in one strip. Stacked as cards
+  // they ate the map from the bottom up and pushed the controls off the top of a
+  // phone; in a row they read left to right and scroll if there is more than
+  // fits.
+  const keys: LegendItem[] = [];
+  if (underlay)
+    keys.push({ key: 'underlay', color: EVIDENCE_COLOR, label: underlayLabel(underlayStatus) });
+  if (markSpacing)
+    keys.push({ key: 'marks', mark: String(markSpacing), label: markLegend(markSpacing, units) });
+  if (hasRoute && overlay !== 'route' && open !== 'overlay')
+    for (const entry of legend)
+      keys.push({ key: `${overlay}-${entry.label}`, color: entry.color, label: entry.label });
+  // The buttons ride above the strip rather than behind it.
+  const columnGap = keys.length ? gap + BAR_HEIGHT + 8 : gap;
+
   return (
     <>
-      <FloatingColumn side="left" offset={offset} gap={gap} fadeAt={fadeAt}>
-        {/* A colouring other than the plain route needs a key, and the sheet is
-            the wrong place for it while the map is what is being read. */}
-        {hasRoute && overlay !== 'route' && open !== 'overlay' && !!legend.length && (
-          <GlassSurface variant="regular" style={styles.legend}>
-            <Text style={styles.legendTitle}>{OVERLAY_LABEL[overlay]}</Text>
-            {legend.map((entry) => (
-              <View key={entry.label} style={styles.legendRow}>
-                <View style={[styles.swatch, { backgroundColor: entry.color }]} />
-                <Text style={styles.legendText}>{entry.label}</Text>
-              </View>
-            ))}
-          </GlassSurface>
-        )}
+      <FloatingColumn side="left" offset={offset} gap={columnGap} fadeAt={fadeAt} inset={leftInset}>
         {open === 'overlay' && (
           <OptionPicker
             accent={accent}
@@ -100,9 +135,47 @@ export function MapControls({
             onPress={() => setOpen((current) => (current === 'overlay' ? undefined : 'overlay'))}
           />
         )}
+        <IconButton
+          symbol="figure.walk.motion"
+          fallbackLabel="Used"
+          accessibilityLabel={
+            underlay
+              ? 'Hide where routes are recorded as used'
+              : 'Show where routes are recorded as used'
+          }
+          accent={underlay ? EVIDENCE_COLOR : accent}
+          active={underlay}
+          size={44}
+          onPress={onUnderlay}
+        />
+        {/* Undo sits on the map because that is where the edits are made, and
+            it stays out of the way until there is something to step back from. */}
+        {editing && (canUndo || canRedo) && (
+          <View style={styles.history}>
+            <IconButton
+              symbol="arrow.uturn.backward"
+              fallbackLabel="Undo"
+              accessibilityLabel="Undo the last change to this route"
+              accent={accent}
+              disabled={!canUndo}
+              size={44}
+              onPress={onUndo}
+            />
+            {canRedo && (
+              <IconButton
+                symbol="arrow.uturn.forward"
+                fallbackLabel="Redo"
+                accessibilityLabel="Redo the change that was undone"
+                accent={accent}
+                size={44}
+                onPress={onRedo}
+              />
+            )}
+          </View>
+        )}
       </FloatingColumn>
 
-      <FloatingColumn side="right" offset={offset} gap={gap} fadeAt={fadeAt}>
+      <FloatingColumn side="right" offset={offset} gap={columnGap} fadeAt={fadeAt} inset={14}>
         {open === 'style' && (
           <OptionPicker
             accent={accent}
@@ -158,8 +231,89 @@ export function MapControls({
           onPress={onLocate}
         />
       </FloatingColumn>
+
+      {!!keys.length && (
+        <LegendBar
+          offset={offset}
+          gap={gap}
+          fadeAt={fadeAt}
+          inset={leftInset}
+          overlay={hasRoute && overlay !== 'route' && open !== 'overlay' ? overlay : undefined}
+          items={keys}
+        />
+      )}
     </>
   );
+}
+
+type LegendItem = { key: string; label: string; color?: string; mark?: string };
+
+/**
+ * The key to whatever the map is showing, laid across the bottom just above the
+ * sheet. It scrolls sideways rather than wrapping, so a colouring with many
+ * bands takes the same slice of map as one with two.
+ */
+function LegendBar({
+  offset,
+  gap,
+  fadeAt,
+  inset,
+  overlay,
+  items,
+}: {
+  offset: SharedValue<number>;
+  gap: number;
+  fadeAt: number;
+  inset: number;
+  overlay?: RouteOverlay;
+  items: LegendItem[];
+}) {
+  const position = useAnimatedStyle(() => ({
+    bottom: offset.value + gap,
+    opacity: interpolate(offset.value, [fadeAt * 0.86, fadeAt], [1, 0], Extrapolation.CLAMP),
+  }));
+  return (
+    <Animated.View
+      pointerEvents="box-none"
+      style={[styles.bar, { left: inset, right: 14 }, position]}
+    >
+      <GlassSurface variant="regular" style={[styles.barSurface, SHADOW.floating]}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.barRow}
+        >
+          {!!overlay && <Text style={styles.legendTitle}>{OVERLAY_LABEL[overlay].toUpperCase()}</Text>}
+          {items.map((item) => (
+            <View key={item.key} style={styles.legendRow}>
+              {item.mark ? (
+                <View style={styles.markSwatch}>
+                  <Text style={styles.markSwatchText}>{item.mark}</Text>
+                </View>
+              ) : (
+                <View style={[styles.swatch, { backgroundColor: item.color }]} />
+              )}
+              <Text style={styles.legendText} numberOfLines={1}>
+                {item.label}
+              </Text>
+            </View>
+          ))}
+        </ScrollView>
+      </GlassSurface>
+    </Animated.View>
+  );
+}
+
+/** What the numbered marks along the route are counting. */
+function markLegend(spacing: number, units: UnitSystem): string {
+  const unit = distanceUnit(units);
+  return spacing === 1 ? `${unit} along the route` : `Every ${spacing} ${unit} along the route`;
+}
+
+function underlayLabel(status: ViewportEvidenceState): string {
+  if (status.error) return status.error;
+  if (status.loading) return 'Loading recorded use…';
+  return status.count ? `${status.count} recorded sections` : 'No recorded use here';
 }
 
 /**
@@ -172,12 +326,14 @@ function FloatingColumn({
   offset,
   gap,
   fadeAt,
+  inset,
   children,
 }: {
   side: 'left' | 'right';
   offset: SharedValue<number>;
   gap: number;
   fadeAt: number;
+  inset: number;
   children: ReactNode;
 }) {
   const position = useAnimatedStyle(() => ({
@@ -189,7 +345,11 @@ function FloatingColumn({
   return (
     <Animated.View
       pointerEvents="box-none"
-      style={[side === 'left' ? styles.left : styles.right, position]}
+      style={[
+        side === 'left' ? styles.left : styles.right,
+        side === 'left' ? { left: inset } : { right: inset },
+        position,
+      ]}
     >
       {children}
     </Animated.View>
@@ -230,8 +390,21 @@ function OptionPicker<T extends string>({
 }
 
 const styles = StyleSheet.create({
-  left: { position: 'absolute', left: 14, alignItems: 'flex-start', gap: 10 },
-  right: { position: 'absolute', right: 14, alignItems: 'flex-end', gap: 10 },
+  left: { position: 'absolute', alignItems: 'flex-start', gap: 10 },
+  history: { flexDirection: 'row', gap: 10 },
+  markSwatch: {
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 9,
+    borderWidth: 1.5,
+    borderColor: '#2d3630',
+    backgroundColor: '#fff',
+  },
+  markSwatchText: { color: '#2d3630', fontSize: 10, fontWeight: '800' },
+  right: { position: 'absolute', alignItems: 'flex-end', gap: 10 },
   // Two columns so an open picker cannot push the buttons off the top of a
   // phone screen when the sheet is already high.
   picker: {
@@ -248,19 +421,16 @@ const styles = StyleSheet.create({
   optionText: { color: COLOR.ink, fontSize: 12, fontWeight: '700' },
   optionTextActive: { color: '#fff', fontWeight: '900' },
 
-  legend: {
-    // The rows size themselves; a width cap plus a flexed label collapsed every
-    // band name to an ellipsis.
-    maxWidth: 240,
-    gap: 4,
-    paddingHorizontal: 11,
-    paddingVertical: 9,
-    borderRadius: RADIUS.panel,
+  bar: { position: 'absolute' },
+  barSurface: {
+    height: BAR_HEIGHT,
+    justifyContent: 'center',
+    borderRadius: RADIUS.pill,
     overflow: 'hidden',
-    ...SHADOW.floating,
   },
+  barRow: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingHorizontal: 13 },
   legendTitle: { color: COLOR.muted, fontSize: 9, fontWeight: '900', letterSpacing: 1.1 },
-  legendRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  legendRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   swatch: { width: 16, height: 4, borderRadius: 2 },
   legendText: { color: COLOR.ink, fontSize: 11, fontWeight: '600' },
 });

@@ -46,6 +46,11 @@ export type WaypointRow = {
   index: number;
   /** Fixed rows (a loop's return-to-start) cannot be dragged or deleted. */
   locked: boolean;
+  /** How far the route covers getting to this point from the one before it.
+   * Absent on the first point, and while no route has been calculated. */
+  legKm?: number;
+  /** That distance in the planner's chosen units, ready to read. */
+  legLabel?: string;
 };
 
 export type WaypointListProps = {
@@ -61,10 +66,12 @@ export type WaypointListProps = {
 export type ProfileChartProps = {
   /** Whatever the active colouring plots against distance. */
   series: RouteSeries;
+  /** Where the cursor sits, when the map put it there rather than the chart. */
+  cursorKm?: number;
   /** The route's colouring, laid out along the same distance axis. */
   spans: ColourSpan[];
   totalKm: number;
   legend: LegendEntry[];
   accent: string;
-  onPoint: (coordinate?: Coordinate) => void;
+  onPoint: (coordinate?: Coordinate, distanceKm?: number) => void;
 };

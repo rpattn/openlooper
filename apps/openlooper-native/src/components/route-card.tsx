@@ -4,6 +4,8 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { COLOR, RADIUS } from '@/theme';
 import { ACTIVITY, CREATION_MODES } from '@/domain/models';
 import type { SavedRouteSummary } from '@/domain/saved-route';
+import { formatDistance } from '../../../../src/domain/units';
+import { useUnits } from '@/state/settings-context';
 import { SmallButton } from './ui/buttons';
 import { RouteThumbnail } from './ui/route-thumbnail';
 
@@ -17,6 +19,7 @@ export type RouteCardProps = {
 /** One saved route: its shape on the map, its numbers, and the two ways of
  * opening it. Kept short so a scroll band shows several at once. */
 export function RouteCard({ route, onOpen, onEdit, onDelete }: RouteCardProps) {
+  const units = useUnits();
   const [confirming, setConfirming] = useState(false);
   const accent = ACTIVITY[route.activity].color;
   const mode = CREATION_MODES.find((item) => item.value === route.mode)?.label ?? route.mode;
@@ -40,7 +43,7 @@ export function RouteCard({ route, onOpen, onEdit, onDelete }: RouteCardProps) {
           </Text>
         </Pressable>
         <Text style={styles.metrics} numberOfLines={1}>
-          {route.distanceKm.toFixed(1)} km · {duration(route.durationSeconds)}
+          {formatDistance(route.distanceKm, units)} · {duration(route.durationSeconds)}
           {route.ascentM === undefined ? '' : ` · ${route.ascentM} m ↑`}
         </Text>
         {confirming ? (

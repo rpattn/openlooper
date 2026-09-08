@@ -73,7 +73,7 @@ export function WaypointList({ rows, accent, editable, onMove, onDelete, onSelec
                   {row.title}
                 </Text>
                 <Text modifiers={[font({ size: 12 }), foregroundColor(COLOR.muted)]}>
-                  {row.subtitle}
+                  {row.legLabel ? `${row.legLabel} from previous` : row.subtitle}
                 </Text>
               </VStack>
               <Spacer />

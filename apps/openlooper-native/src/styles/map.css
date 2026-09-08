@@ -52,6 +52,25 @@
   background: #273f78;
 }
 
+/* Whole kilometres along the route. Small enough to sit on the line without
+   covering it, legible enough to answer what it is. */
+.distance-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border: 1.5px solid #2d3630;
+  border-radius: 9px;
+  background: #fff;
+  color: #2d3630;
+  box-shadow: 0 1px 4px #0003;
+  font: 800 10px Inter, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
 /* Marker popup: the point's name and one way to remove it, matching the
    callout the native map shows. */
 .waypoint-popup {

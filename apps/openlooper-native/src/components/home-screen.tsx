@@ -5,8 +5,11 @@ import { COLOR, RADIUS, SHADOW } from '@/theme';
 import { ACTIVITY, CREATION_MODES } from '@/domain/models';
 import type { Activity, CreationMode, InteractionMode } from '@/domain/models';
 import type { SavedRoutePage } from '@/domain/saved-route';
+import { formatDistance } from '../../../../src/domain/units';
+import { useUnits } from '@/state/settings-context';
 import { RouteCard } from './route-card';
 import { PrimaryButton, SmallButton } from './ui/buttons';
+import { IconButton } from './ui/icon-button';
 import { DistanceField } from './ui/distance-field';
 import { Segmented } from './ui/segmented';
 
@@ -28,6 +31,7 @@ export type HomeScreenProps = {
   onPage: (index: number) => void;
   onOpen: (id: string, interaction: InteractionMode) => void;
   onDelete: (id: string) => void;
+  onSettings: () => void;
 };
 
 /**
@@ -41,6 +45,7 @@ export type HomeScreenProps = {
  */
 export function HomeScreen(props: HomeScreenProps) {
   const insets = useSafeAreaInsets();
+  const units = useUnits();
   const accent = ACTIVITY[props.activity].color;
   const page = props.page;
   const total = page?.total ?? 0;
@@ -52,8 +57,18 @@ export function HomeScreen(props: HomeScreenProps) {
       <View style={styles.scrim} pointerEvents="none" />
       <View style={[styles.column, { paddingTop: insets.top + 14 }]}>
         <View style={styles.masthead}>
-          <Text style={styles.brand}>OPENLOOPER</Text>
-          <Text style={styles.title}>Make a route worth taking</Text>
+          <View style={styles.mastheadText}>
+            <Text style={styles.brand}>OPENLOOPER</Text>
+            <Text style={styles.title}>Make a route worth taking</Text>
+          </View>
+          <IconButton
+            symbol="gearshape.fill"
+            fallbackLabel="⚙"
+            accessibilityLabel="Settings"
+            accent={COLOR.ink}
+            size={44}
+            onPress={props.onSettings}
+          />
         </View>
 
         <View style={styles.listBand}>
@@ -61,7 +76,7 @@ export function HomeScreen(props: HomeScreenProps) {
             <Text style={styles.sectionHeading}>Saved routes</Text>
             <Text style={styles.stats}>
               {total
-                ? `${total} saved · ${(page?.totalDistanceKm ?? 0).toFixed(0)} km`
+                ? `${total} saved · ${formatDistance(page?.totalDistanceKm ?? 0, units, 0)}`
                 : props.loading
                   ? 'Loading…'
                   : 'None yet'}
@@ -168,7 +183,14 @@ const styles = StyleSheet.create({
   // Wide screens read the page as a column rather than stretching every card.
   column: { flex: 1, width: '100%', maxWidth: 560, alignSelf: 'center' },
 
-  masthead: { paddingHorizontal: 18, paddingBottom: 10 },
+  masthead: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    paddingHorizontal: 18,
+    paddingBottom: 10,
+  },
+  mastheadText: { flex: 1 },
   brand: { color: COLOR.muted, fontSize: 11, fontWeight: '900', letterSpacing: 1.5 },
   title: { color: COLOR.ink, fontSize: 25, fontWeight: '900', letterSpacing: -0.7 },
 

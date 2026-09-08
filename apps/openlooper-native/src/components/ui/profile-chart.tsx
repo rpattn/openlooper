@@ -2,6 +2,8 @@ import { useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { COLOR } from '@/theme';
+import { formatDistance } from '../../../../../src/domain/units';
+import { useUnits } from '@/state/settings-context';
 import { ColourStrip } from './colour-strip';
 import { Legend } from './legend';
 import { sampleSeries, seriesSummary } from './series-model';
@@ -17,12 +19,14 @@ const COLUMNS = 72;
  */
 export function ProfileChart({
   series,
+  cursorKm,
   spans,
   totalKm,
   legend,
   accent,
   onPoint,
 }: ProfileChartProps) {
+  const units = useUnits();
   const samples = useMemo(() => sampleSeries(series.points, COLUMNS), [series.points]);
   const summary = useMemo(() => seriesSummary(samples), [samples]);
   const format = (value: number) => `${value.toFixed(series.precision)}${series.unit}`;
@@ -39,6 +43,7 @@ export function ProfileChart({
         height={HEIGHT}
         label={series.label}
         format={format}
+        cursorKm={cursorKm}
         onPoint={onPoint}
       >
         <View style={styles.grid} pointerEvents="none">
@@ -64,8 +69,8 @@ export function ProfileChart({
       </SeriesScrubber>
       <ColourStrip spans={spans} totalKm={totalKm} />
       <View style={styles.footer}>
-        <Text style={styles.axisText}>0 km</Text>
-        <Text style={styles.axisText}>{summary.distanceKm.toFixed(1)} km</Text>
+        <Text style={styles.axisText}>{formatDistance(0, units)}</Text>
+        <Text style={styles.axisText}>{formatDistance(summary.distanceKm, units)}</Text>
       </View>
       <Legend entries={legend} />
     </View>

@@ -1,8 +1,16 @@
 import { ExternalLink, X } from "lucide-react";
 import type { RouteEdge } from "../domain/models";
+import {
+  cycleLaneName,
+  roadClassName,
+  sidewalkName,
+  surfaceName,
+  travelModeName,
+  travelTypeName,
+  useName,
+} from "../domain/vocabulary";
 
-const recorded = (value?: string) =>
-  !value || value === "none" ? "Not recorded" : value.replaceAll("_", " ");
+const recorded = (value?: string) => value ?? "Not recorded";
 
 export function EdgeDetails({
   edge,
@@ -22,13 +30,13 @@ export function EdgeDetails({
       : `${edge.lengthKm.toFixed(1)} km`;
   const details = [
     ["Way", attributes.name ?? "Unnamed"],
-    ["Use", recorded(attributes.use)],
-    ["Road class", recorded(attributes.roadClass)],
-    ["Surface", recorded(attributes.surface)],
-    ["Travel mode", recorded(attributes.travelMode)],
-    ["Travel type", recorded(attributes.travelType)],
-    ["Sidewalk", recorded(attributes.sidewalk)],
-    ["Cycle lane", recorded(attributes.cycleLane)],
+    ["Kind", recorded(useName(attributes.use))],
+    ["Road type", recorded(roadClassName(attributes.roadClass))],
+    ["Surface", recorded(surfaceName(attributes.surface))],
+    ["Suitable for", recorded(travelModeName(attributes.travelMode))],
+    ["Travel type", recorded(travelTypeName(attributes.travelType))],
+    ["Pavement", recorded(sidewalkName(attributes.sidewalk))],
+    ["Cycle lane", recorded(cycleLaneName(attributes.cycleLane))],
     [
       "Shoulder",
       attributes.shoulder === undefined
@@ -49,7 +57,7 @@ export function EdgeDetails({
         ? "Not recorded"
         : String(attributes.bicycleNetwork),
     ],
-    ["Maximum grade", grade >= 32000 ? "Unavailable" : `${grade.toFixed(0)}%`],
+    ["Steepest point", grade >= 32000 ? "Unavailable" : `${grade.toFixed(0)}%`],
   ];
   return (
     <section className="panel-section edge-details" aria-live="polite">
