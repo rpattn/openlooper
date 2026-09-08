@@ -1,0 +1,61 @@
+# One origin for the page and both APIs. Neither Valhalla nor the evidence
+# service answers CORS preflight requests, so publishing them on separate
+# hostnames would break every browser call; this nginx keeps them same-origin
+# behind the single tunnel hostname.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openlooper-web
+  namespace: openlooper
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openlooper-web
+  template:
+    metadata:
+      labels:
+        app: openlooper-web
+    spec:
+      containers:
+        - name: web
+          image: rpattn/openlooper-web:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: VALHALLA_UPSTREAM
+              value: openlooper-valhalla.openlooper.svc.cluster.local:8002
+            - name: EVIDENCE_UPSTREAM
+              value: openlooper-evidence.openlooper.svc.cluster.local:8003
+            # nginx resolves the upstreams per request rather than at startup,
+            # so it needs a resolver. 10.43.0.10 is CoreDNS on a default k3s
+            # service CIDR; confirm with
+            #   kubectl -n kube-system get svc kube-dns
+            - name: DNS_RESOLVER
+              value: 10.43.0.10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openlooper-web
+  namespace: openlooper
+spec:
+  selector:
+    app: openlooper-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

@@ -1,0 +1,54 @@
+# Optional: only apply this if you want a tunnel dedicated to OpenLooper. If a
+# cloudflared already runs on the node or elsewhere in the cluster, skip this
+# file and add a public hostname to that tunnel pointing at
+#   http://openlooper-web.openlooper.svc.cluster.local:80
+# (in-cluster), or expose openlooper-web as a NodePort and point at the node.
+#
+# Create the token secret first, from Zero Trust > Networks > Tunnels:
+#   kubectl -n openlooper create secret generic cloudflared-token \
+#     --from-literal=token='<the connector token>'
+#
+# The tunnel terminates TLS at Cloudflare, which the browser geolocation API
+# requires: served over plain HTTP the "use my location" control silently does
+# nothing outside localhost.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared
+  namespace: openlooper
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloudflared
+  template:
+    metadata:
+      labels:
+        app: cloudflared
+    spec:
+      containers:
+        - name: cloudflared
+          image: cloudflare/cloudflared:2024.12.2
+          args:
+            - tunnel
+            - --no-autoupdate
+            - --metrics
+            - 0.0.0.0:2000
+            - run
+          env:
+            - name: TUNNEL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cloudflared-token
+                  key: token
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: 2000
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi

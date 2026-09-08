@@ -1,0 +1,91 @@
+# Valhalla serves the routing graph that was prepared on the node. The upstream
+# scripted image will happily rebuild tiles from the PBF, which takes hours, so
+# force_rebuild stays off and a prepared /srv/openlooper/valhalla is a
+# precondition rather than something this Deployment creates.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openlooper-valhalla
+  namespace: openlooper
+spec:
+  replicas: 1
+  # The graph directory is a single hostPath opened read-write by the server, so
+  # two pods must never overlap during a rollout.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: openlooper-valhalla
+  template:
+    metadata:
+      labels:
+        app: openlooper-valhalla
+    spec:
+      containers:
+        - name: valhalla
+          image: ghcr.io/valhalla/valhalla-scripted:3.8.3
+          ports:
+            - name: http
+              containerPort: 8002
+          env:
+            - name: tile_urls
+              value: /custom_files/local-region.osm.pbf
+            - name: use_tiles_ignore_pbf
+              value: "False"
+            - name: force_rebuild
+              value: "False"
+            - name: build_elevation
+              value: "True"
+            - name: build_admins
+              value: "True"
+            - name: build_time_zones
+              value: "True"
+            - name: build_tar
+              value: "True"
+            - name: serve_tiles
+              value: "True"
+            - name: server_threads
+              value: "4"
+          volumeMounts:
+            - name: routing-data
+              mountPath: /custom_files
+          # Loading a regional graph takes a while, and a start that finds no
+          # tiles builds them from the PBF first, which is hours for a
+          # multi-county region. 240 x 30 s gives that two hours before the
+          # kubelet decides the container is stuck; watch the logs instead of
+          # waiting on the probe.
+          startupProbe:
+            httpGet:
+              path: /status
+              port: http
+            periodSeconds: 30
+            failureThreshold: 240
+          readinessProbe:
+            httpGet:
+              path: /status
+              port: http
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              memory: 8Gi
+      volumes:
+        - name: routing-data
+          hostPath:
+            path: /srv/openlooper/valhalla
+            type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openlooper-valhalla
+  namespace: openlooper
+spec:
+  selector:
+    app: openlooper-valhalla
+  ports:
+    - name: http
+      port: 8002
+      targetPort: http

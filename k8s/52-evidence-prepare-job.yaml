@@ -1,0 +1,106 @@
+# Rebuilds the route-use evidence database against the current
+# /srv/openlooper/valhalla/local-region.osm.pbf. This is the long one: it
+# streams the whole 21 GB compressed 2013 OSM GPS archive past the regional
+# network, which took about 45 minutes for the two-county prototype region and
+# scales with both the archive's fixed single-core decompression floor and the
+# widened prefilter bands of a larger region.
+#
+#   kubectl -n openlooper delete job openlooper-evidence-prepare --ignore-not-found
+#   kubectl -n openlooper apply -f k8s/52-evidence-prepare-job.yaml
+#   kubectl -n openlooper logs -f job/openlooper-evidence-prepare
+#
+# It writes route-use-evidence.sqlite.next rather than replacing the live file:
+# the running service holds the current database open, and swapping it under a
+# live pod leaves that pod serving the old inode. Promote it with the swap
+# described in docs/deployment.md once the Job has succeeded.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: openlooper-evidence-prepare
+  namespace: openlooper
+spec:
+  backoffLimit: 0
+  # 12 hours. A wider region is slower, but a run still going after this has
+  # stalled rather than progressed — the script prints stats every 30 seconds.
+  activeDeadlineSeconds: 43200
+  template:
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: fetch-gps
+          image: curlimages/curl:8.11.1
+          securityContext:
+            runAsUser: 0
+          command: ["/bin/sh", "-eu", "-c"]
+          args:
+            - |
+              archive=/gps/gpx-planet-2013-04-09.tar.xz
+              url=https://planet.openstreetmap.org/gps/gpx-planet-2013-04-09.tar.xz
+              mkdir -p /gps
+              # Roughly 21 GB. --continue-at resumes, so re-running this Job
+              # after an interruption costs only the remainder.
+              curl --fail --location --retry 5 --connect-timeout 20 \
+                   --continue-at - --output "$archive" "$url"
+              curl --fail --location --retry 5 --output "$archive.md5" "$url.md5"
+              # Hours of matching against a corrupt archive would be wasted, and
+              # the failure would look like thin evidence rather than a bad
+              # download, so verify before handing it to the prepare step.
+              expected=$(awk '{print $1; exit}' "$archive.md5")
+              actual=$(md5sum "$archive" | awk '{print $1}')
+              echo "expected $expected"
+              echo "actual   $actual"
+              [ "$expected" = "$actual" ]
+          volumeMounts:
+            - name: gps-archive
+              mountPath: /gps
+      containers:
+        - name: prepare
+          image: rpattn/openlooper-evidence:latest
+          imagePullPolicy: Always
+          args:
+            - python
+            - /app/prepare_evidence.py
+            - --pbf=/routing/local-region.osm.pbf
+            - --gps-archive=/gps/gpx-planet-2013-04-09.tar.xz
+            - --output=/evidence/route-use-evidence.sqlite.next
+            - --report=/evidence/build-report.json.next
+            # Streaming and decompressing the archive stays on one core and sets
+            # the floor on the whole build, so more than eight buys nothing.
+            - --workers=8
+          volumeMounts:
+            - name: routing-data
+              mountPath: /routing
+              readOnly: true
+            - name: evidence-data
+              mountPath: /evidence
+            - name: gps-archive
+              mountPath: /gps
+              readOnly: true
+          resources:
+            requests:
+              # A scheduling floor, not a cap: there is no CPU limit, so the
+              # eight workers still use whatever the node has spare. Set high
+              # enough to matter, low enough that the Job is not left Pending
+              # alongside the three Deployments.
+              cpu: "4"
+              memory: 8Gi
+            # The parent holds an STRtree over every highway way in the region
+            # plus a per-section evidence dict, and eight forked workers each
+            # dirty the shared geometry pages as they touch refcounts. Raise
+            # this before widening the region much past the ring in
+            # 50-region-config.yaml.
+            limits:
+              memory: 24Gi
+      volumes:
+        - name: routing-data
+          hostPath:
+            path: /srv/openlooper/valhalla
+            type: Directory
+        - name: evidence-data
+          hostPath:
+            path: /srv/openlooper/evidence
+            type: Directory
+        - name: gps-archive
+          hostPath:
+            path: /srv/openlooper/gps
+            type: DirectoryOrCreate

@@ -1,0 +1,85 @@
+# The evidence service refuses to start unless the mounted PBF's SHA-256 matches
+# the checksum recorded when the database was built, so the database and the
+# routing directory always have to be swapped together. A CrashLoopBackOff here
+# after a region change is that check firing, not a broken image.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openlooper-evidence
+  namespace: openlooper
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: openlooper-evidence
+  template:
+    metadata:
+      labels:
+        app: openlooper-evidence
+    spec:
+      containers:
+        - name: evidence
+          image: rpattn/openlooper-evidence:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8003
+          env:
+            - name: EVIDENCE_DATABASE
+              value: /evidence/route-use-evidence.sqlite
+            - name: OSM_PBF
+              value: /data/local-region.osm.pbf
+            - name: EVIDENCE_PORT
+              value: "8003"
+          volumeMounts:
+            - name: evidence-data
+              mountPath: /evidence
+              readOnly: true
+            - name: routing-data
+              mountPath: /data
+              readOnly: true
+          # Startup hashes the whole PBF before it listens, so allow for that
+          # plus the page cache being cold after a node reboot.
+          startupProbe:
+            httpGet:
+              path: /status
+              port: http
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /status
+              port: http
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 250m
+              # 128 MB of that is the service's own projected-geometry cache;
+              # the rest is shapely working set across six request workers.
+              memory: 768Mi
+            limits:
+              memory: 3Gi
+      volumes:
+        - name: evidence-data
+          hostPath:
+            path: /srv/openlooper/evidence
+            type: Directory
+        - name: routing-data
+          hostPath:
+            path: /srv/openlooper/valhalla
+            type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openlooper-evidence
+  namespace: openlooper
+spec:
+  selector:
+    app: openlooper-evidence
+  ports:
+    - name: http
+      port: 8003
+      targetPort: http

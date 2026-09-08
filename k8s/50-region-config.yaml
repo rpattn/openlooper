@@ -1,0 +1,26 @@
+# The counties merged into local-region.osm.pbf. Edit this list, apply it, then
+# re-run both prepare Jobs — the routing graph and the evidence database are
+# both keyed to the merged PBF's SHA-256 and have to move together.
+#
+# Evidence preparation projects to EPSG:27700, the British National Grid, so the
+# region must stay inside Great Britain.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openlooper-region
+  namespace: openlooper
+data:
+  # Geofabrik England subregion slugs, one per line. The current prototype
+  # region is staffordshire + derbyshire alone (71 MB merged); the list below
+  # is the contiguous ring around it, about 250 MB merged.
+  counties: |
+    staffordshire
+    derbyshire
+    cheshire
+    shropshire
+    west-midlands
+    warwickshire
+    worcestershire
+    leicestershire
+    nottinghamshire
+  base-url: https://download.geofabrik.de/europe/united-kingdom/england

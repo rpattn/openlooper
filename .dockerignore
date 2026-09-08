@@ -1,0 +1,15 @@
+# The image builds only from sources; everything generated or downloaded is
+# either reinstalled in the builder stage or mounted at runtime on the cluster.
+node_modules
+**/node_modules
+dist
+**/dist
+.git
+.expo
+**/.expo
+docker/valhalla/data
+docker/evidence/data
+k8s
+docs
+*.log
+.env

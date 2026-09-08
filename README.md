@@ -84,13 +84,13 @@ npm run build
 npm run check
 ```
 
-There are intentionally no automated tests, test dependencies, test script, fixtures, or CI. Manual browser verification is the prototype validation strategy.
+There are intentionally no automated tests, test dependencies, test script, or fixtures. Manual browser verification is the prototype validation strategy. The one workflow under `.github/workflows/` publishes container images; it runs no checks.
 
 ## Routing-data maintenance
 
 `routing:prepare` downloads the current Staffordshire and Derbyshire Geofabrik extracts, validates non-empty existing downloads, and merges them with pinned Osmium 1.18 images for amd64 (`iboates/osmium`) or arm64 (`mvherweg/gis-arm64-osmium`). It prints every source URL, size, and modification date. Source PBFs, merged data, elevation, graph tiles, and generated config remain under `docker/valhalla/data/` and are ignored by Git.
 
-To refresh data, remove the two source PBFs under `docker/valhalla/data/sources/` and `local-region.osm.pbf`, run `routing:prepare`, stop Valhalla, remove its generated graph/config artifacts in the data directory, then run `routing:up`. These removals are intentional local maintenance and are not automated by the project. To switch regions, provide one merged/regional PBF named `local-region.osm.pbf` and rebuild.
+To refresh data, remove the two source PBFs under `docker/valhalla/data/sources/` and `local-region.osm.pbf`, run `routing:prepare`, stop Valhalla, remove its generated graph/config artifacts in the data directory, then run `routing:up`. These removals are intentional local maintenance and are not automated by the project. To switch or widen the region, set `OPENLOOPER_REGION_URLS` to a space- or newline-separated list of Geofabrik extract URLs and rebuild; Geofabrik splits England by county, so widening means naming more counties. Evidence preparation projects to EPSG:27700, so the region has to stay inside Great Britain. [docs/deployment.md](docs/deployment.md) records what a wider region costs to prepare.
 
 Use `npm run routing:down` to stop the service. If startup stalls, inspect `routing:logs`, check Docker disk allocation, verify the merged PBF is non-empty, and remember elevation downloading requires network access. Both amd64 and arm64 depend on the published architecture support of the pinned images.
 
@@ -118,4 +118,10 @@ Search calls public Nominatim only after explicit submission, returns at most fi
 
 Routes obey Valhalla costing and its loaded graph. Notes reflect normalized graph attributes and may be incomplete or inherited from importer defaults. OpenLooper does not claim current traffic, quietness, personal safety, lighting, construction, pavement condition, accessibility, nearby-but-separate facilities, raw access-tag provenance, or temporary hazards. Elevation and grade are approximate. Always apply local knowledge.
 
-This repository has no backend, database, authentication, sharing, tracking, analytics, production deployment, or compatibility framework. See [SPEC.md](SPEC.md) for the approved prototype scope.
+This repository has no backend, authentication, sharing, tracking, analytics, or compatibility framework. See [SPEC.md](SPEC.md) for the approved prototype scope.
+
+## Deploying it
+
+The prototype can run on a single-node k3s homelab behind a Cloudflare tunnel, with the Expo web export, Valhalla, and the evidence service published on one hostname. Region data stays on the node rather than in any image, and the node can rebuild a wider region itself. See [Deploying OpenLooper to a single-node k3s homelab](docs/deployment.md); manifests are in `k8s/`.
+
+This is still personal-testing deployment, not production operation: there is no authentication in front of either service, no backups, and no availability guarantee.

@@ -1,0 +1,90 @@
+# Downloads the county extracts named in the openlooper-region ConfigMap and
+# merges them into /srv/openlooper/valhalla/local-region.osm.pbf.
+#
+# Run it, then follow the region-change runbook in docs/deployment.md: the
+# routing graph has to be rebuilt from the new PBF and the evidence database
+# rebuilt against it before either service will serve the wider area.
+#
+#   kubectl -n openlooper delete job openlooper-region-prepare --ignore-not-found
+#   kubectl -n openlooper apply -f k8s/51-region-prepare-job.yaml
+#   kubectl -n openlooper logs -f job/openlooper-region-prepare
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: openlooper-region-prepare
+  namespace: openlooper
+spec:
+  backoffLimit: 0
+  # Downloads resume, so a re-run after a network failure is cheap; this only
+  # stops a wedged Job from holding the node forever.
+  activeDeadlineSeconds: 21600
+  template:
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: download
+          image: curlimages/curl:8.11.1
+          # The image defaults to uid 100, which cannot write the root-owned
+          # hostPath directory.
+          securityContext:
+            runAsUser: 0
+          command: ["/bin/sh", "-eu", "-c"]
+          args:
+            - |
+              base="$(cat /config/base-url)"
+              mkdir -p /routing/sources
+              while read -r county; do
+                [ -n "$county" ] || continue
+                out="/routing/sources/${county}-latest.osm.pbf"
+                echo "==> ${base}/${county}-latest.osm.pbf"
+                # --continue-at resumes a partial file; Geofabrik supports
+                # ranges, so an interrupted run does not start over.
+                curl --fail --location --retry 5 --connect-timeout 20 \
+                     --continue-at - --remote-time --output "$out" \
+                     "${base}/${county}-latest.osm.pbf"
+                ls -l "$out"
+              done < /config/counties
+          volumeMounts:
+            - name: routing-data
+              mountPath: /routing
+            - name: region
+              mountPath: /config
+      containers:
+        - name: merge
+          image: iboates/osmium:1.18.0
+          # The image's entrypoint is osmium itself, so the shell has to be
+          # named explicitly to build the input list from the ConfigMap.
+          command: ["/bin/sh", "-eu", "-c"]
+          args:
+            - |
+              set --
+              while read -r county; do
+                [ -n "$county" ] || continue
+                osmium fileinfo "/routing/sources/${county}-latest.osm.pbf" > /dev/null
+                set -- "$@" "/routing/sources/${county}-latest.osm.pbf"
+              done < /config/counties
+              echo "Merging $# extract(s)…"
+              osmium merge --overwrite "$@" -o /routing/local-region.osm.pbf
+              ls -l /routing/local-region.osm.pbf
+              # Both services are pinned to this checksum; the evidence service
+              # refuses to start unless its database records the same value.
+              sha256sum /routing/local-region.osm.pbf
+          volumeMounts:
+            - name: routing-data
+              mountPath: /routing
+            - name: region
+              mountPath: /config
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              memory: 8Gi
+      volumes:
+        - name: routing-data
+          hostPath:
+            path: /srv/openlooper/valhalla
+            type: Directory
+        - name: region
+          configMap:
+            name: openlooper-region

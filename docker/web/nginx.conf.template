@@ -1,0 +1,70 @@
+# Serves the Expo static web export and forwards the two service paths the
+# client already uses. Neither Valhalla nor the evidence service answers CORS
+# preflight requests, so every browser call has to stay same-origin: the page
+# and both APIs are published on one hostname and this proxy splits them again.
+
+# Upstreams are held in variables so nginx resolves them per request. A plain
+# proxy_pass hostname is resolved once at startup, which makes the web pod fail
+# to boot whenever it is scheduled before valhalla or evidence have Endpoints.
+resolver ${DNS_RESOLVER} valid=10s ipv6=off;
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 8080;
+    server_name _;
+    root /usr/share/nginx/html;
+
+    # Route generation posts a batch of up to six routes; the evidence service
+    # itself refuses bodies over 10 MB, so this only has to clear that.
+    client_max_body_size 12m;
+
+    gzip on;
+    gzip_comp_level 5;
+    gzip_min_length 1024;
+    gzip_proxied any;
+    gzip_vary on;
+    gzip_types application/javascript application/json application/geo+json
+               text/css text/plain image/svg+xml application/wasm;
+
+    location = /healthz {
+        access_log off;
+        add_header Content-Type text/plain;
+        return 200 "ok\n";
+    }
+
+    location /api/valhalla/ {
+        set $valhalla_upstream ${VALHALLA_UPSTREAM};
+        rewrite ^/api/valhalla/(.*)$ /$1 break;
+        proxy_pass http://$valhalla_upstream;
+        include /etc/nginx/openlooper-proxy.conf;
+    }
+
+    location /api/evidence/ {
+        set $evidence_upstream ${EVIDENCE_UPSTREAM};
+        rewrite ^/api/evidence/(.*)$ /$1 break;
+        proxy_pass http://$evidence_upstream;
+        include /etc/nginx/openlooper-proxy.conf;
+    }
+
+    # Expo emits content-hashed bundles and assets under _expo/static.
+    location /_expo/static/ {
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        try_files $uri =404;
+    }
+
+    location /assets/ {
+        add_header Cache-Control "public, max-age=604800";
+        try_files $uri =404;
+    }
+
+    # expo-router's static output writes one HTML file per route, so a deep link
+    # is a real file before it is ever a client-side route.
+    location / {
+        add_header Cache-Control "no-cache";
+        try_files $uri $uri.html $uri/index.html /index.html;
+    }
+}
