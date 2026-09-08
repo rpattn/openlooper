@@ -1,9 +1,17 @@
 import type { RouteEdge, RouteResult, RouteUseEvidence } from "../domain/models";
+import { encodePolyline } from "../routing/valhalla-mapper";
 
 const BASE = import.meta.env.VITE_EVIDENCE_URL ?? "/api/evidence";
 
 export type EvidenceSource = {
   source_id: string;
+  /**
+   * What the source claims. `use` means somebody is recorded as having
+   * travelled here; `status` a recorded legal or network designation; and
+   * `context` something recorded about the way's surroundings. They must not
+   * be presented to the planner as one kind of statement.
+   */
+  kind: "use" | "status" | "context";
   label: string;
   source_url: string;
   licence: string;
@@ -47,13 +55,32 @@ export async function viewportEvidence(
   return responseJson(response);
 }
 
-function edgeRequest(route: RouteResult, edge: RouteEdge) {
+/**
+ * One route as index ranges into its own shape. The service already holds the
+ * way geometry, so sending each edge's coordinates again was the largest body
+ * on the wire; the shape travels once as its encoded polyline instead.
+ */
+function routeRequest(route: RouteResult, edges: RouteEdge[]) {
   return {
-    wayId: edge.attributes.wayId,
-    coordinates: route.geometry
-      .slice(edge.beginIndex, edge.endIndex + 1)
-      .map((point) => [point.lon, point.lat]),
+    encodedPolyline: route.encodedShape ?? encodePolyline(route.geometry),
+    edges: edges.map((edge) => ({
+      wayId: edge.attributes.wayId,
+      beginIndex: edge.beginIndex,
+      endIndex: edge.endIndex,
+    })),
   };
+}
+
+type SourceBreakdown = Record<string, { evidencedFraction: number }>;
+
+function shares(bySource?: SourceBreakdown): Record<string, number> | undefined {
+  if (!bySource) return undefined;
+  return Object.fromEntries(
+    Object.entries(bySource).map(([source, value]) => [
+      source,
+      value.evidencedFraction,
+    ]),
+  );
 }
 
 export async function routeUseEvidence(
@@ -61,26 +88,30 @@ export async function routeUseEvidence(
   edges: RouteEdge[],
   includeSegments = true,
   signal?: AbortSignal,
+  breakdown = false,
 ): Promise<RouteUseEvidence> {
   try {
     const response = await fetch(`${BASE}/route-evidence`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        edges: edges.map((edge) => edgeRequest(route, edge)),
+        ...routeRequest(route, edges),
         includeSegments,
+        breakdown,
       }),
       signal,
     });
     const data = await responseJson<{
       evidencedDistanceM: number;
       evidencedFraction: number;
+      bySource?: SourceBreakdown;
       segments?: GeoJSON.FeatureCollection;
     }>(response);
     return {
       status: "available",
       evidencedDistanceKm: data.evidencedDistanceM / 1000,
       evidencedDistancePct: data.evidencedFraction * 100,
+      bySource: shares(data.bySource),
       segments: data.segments,
     };
   } catch (error) {
@@ -111,9 +142,10 @@ export async function routeUseEvidenceBatch(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         includeSegments: false,
+        breakdown: true,
         routes: routes.map(({ id, route, edges }) => ({
           id,
-          edges: edges.map((edge) => edgeRequest(route, edge)),
+          ...routeRequest(route, edges),
         })),
       }),
       signal,
@@ -123,6 +155,7 @@ export async function routeUseEvidenceBatch(
         id: string;
         evidencedDistanceM: number;
         evidencedFraction: number;
+        bySource?: SourceBreakdown;
       }>;
     }>(response);
     return new Map(
@@ -132,6 +165,7 @@ export async function routeUseEvidenceBatch(
           status: "available" as const,
           evidencedDistanceKm: result.evidencedDistanceM / 1000,
           evidencedDistancePct: result.evidencedFraction * 100,
+          bySource: shares(result.bySource),
         },
       ]),
     );

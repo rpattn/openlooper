@@ -10,12 +10,27 @@ export type Waypoint = {
   role: WaypointRole;
 };
 
+/** What the planner is willing to travel on. */
+export type SurfaceTolerance = "paved" | "firm" | "any";
 export type RoutingPreferences = {
-  pathPreference: number;
-  avoidSteps: boolean;
+  /**
+   * 0 keeps the route direct and on made-up surfaces; 1 pushes it onto paths
+   * and away from main roads. One control rather than four, because the four it
+   * replaces interacted in ways nobody could predict. Measured end to end on
+   * pedestrian costing, this moves a route from 12% path and 53% main road to
+   * 60% path and 13%.
+   */
+  character: number;
+  surfaceTolerance: SurfaceTolerance;
   hillPreference: number;
-  roadComfort: number;
-  pavedPreference: boolean;
+  /** A hard avoid, kept apart from the soft preferences above it. */
+  avoidSteps: boolean;
+  /**
+   * Walking and running only. Lit ways are mostly main roads, so this both
+   * lengthens the route and puts more of it on traffic — measured at +3.8 km
+   * and 65% main road against 16% without it.
+   */
+  preferLit: boolean;
 };
 
 export type RoutePlan = {
@@ -47,6 +62,13 @@ export type RouteUseEvidence = {
   status: "available" | "unavailable";
   evidencedDistanceKm: number;
   evidencedDistancePct: number;
+  /**
+   * Share of route distance covered by each evidence source, 0 to 1. Present
+   * only when a breakdown was requested. Sources are summed per section rather
+   * than unioned, so a value can sit slightly above the union share; it drives
+   * ranking, not the headline `evidencedDistancePct`.
+   */
+  bySource?: Record<string, number>;
   segments?: GeoJSON.FeatureCollection;
 };
 export type EdgeAttributes = {
@@ -112,7 +134,12 @@ export type LoopScoringWeights = {
   repetition: number;
   geometry: number;
   issues: number;
-  evidence: number;
+  /**
+   * Points available to the character term, which is the only part of the score
+   * a route can gain rather than only lose. It runs from -1 to 1, so a route
+   * made of main road can spend these points as well as earn them.
+   */
+  character: number;
 };
 export type LoopMetrics = {
   distanceError: number;
@@ -124,7 +151,9 @@ export type LoopMetrics = {
   repetitionPenaltyPoints: number;
   geometryPenaltyPoints: number;
   issuePenaltyPoints: number;
-  evidenceBonusPoints: number;
+  /** -1 to 1, or undefined when there is no evidence breakdown to read. */
+  character?: number;
+  characterPoints: number;
   baseScore: number;
   score: number;
 };
@@ -202,11 +231,11 @@ export type PlannerState = {
 };
 
 export const DEFAULT_PREFERENCES: RoutingPreferences = {
-  pathPreference: 0.65,
-  avoidSteps: false,
+  character: 0.65,
+  surfaceTolerance: "firm",
   hillPreference: 0.5,
-  roadComfort: 0.75,
-  pavedPreference: true,
+  avoidSteps: false,
+  preferLit: false,
 };
 export const DEFAULT_MAP_STYLE: MapStyleId = "standard";
 export const DEFAULT_OVERLAY: RouteOverlay = "route";
@@ -217,4 +246,44 @@ export const DEFAULT_CAMERA: MapCamera = {
 
 export function waypoint(coordinate: Coordinate, role: WaypointRole): Waypoint {
   return { id: randomId(), coordinate, role };
+}
+
+/**
+ * Reads stored preferences, whatever shape they were saved in. A session saved
+ * before the controls were reworked carries `pathPreference`, `roadComfort` and
+ * `pavedPreference`; those map onto what replaced them, so an existing session
+ * keeps the route it was planning rather than being reset to the defaults.
+ */
+export function normalizedPreferences(value: unknown): RoutingPreferences {
+  if (typeof value !== "object" || value === null) return DEFAULT_PREFERENCES;
+  const stored = value as Record<string, unknown>;
+  const number = (input: unknown, fallback: number) =>
+    typeof input === "number" && Number.isFinite(input)
+      ? Math.min(1, Math.max(0, input))
+      : fallback;
+  const legacyCharacter =
+    typeof stored.pathPreference === "number"
+      ? stored.pathPreference
+      : typeof stored.roadComfort === "number"
+        ? stored.roadComfort
+        : undefined;
+  const tolerance = stored.surfaceTolerance;
+  return {
+    character: number(
+      stored.character ?? legacyCharacter,
+      DEFAULT_PREFERENCES.character,
+    ),
+    surfaceTolerance:
+      tolerance === "paved" || tolerance === "firm" || tolerance === "any"
+        ? tolerance
+        : stored.pavedPreference === false
+          ? "any"
+          : DEFAULT_PREFERENCES.surfaceTolerance,
+    hillPreference: number(
+      stored.hillPreference,
+      DEFAULT_PREFERENCES.hillPreference,
+    ),
+    avoidSteps: Boolean(stored.avoidSteps),
+    preferLit: Boolean(stored.preferLit),
+  };
 }

@@ -1,5 +1,9 @@
 import type { PlannerState } from "../domain/models";
-import { DEFAULT_MAP_STYLE, DEFAULT_OVERLAY } from "../domain/models";
+import {
+  DEFAULT_MAP_STYLE,
+  DEFAULT_OVERLAY,
+  normalizedPreferences,
+} from "../domain/models";
 import { initialState } from "./state";
 
 const KEY = "openlooper-session";
@@ -94,6 +98,10 @@ export function restore(): PlannerState {
         );
       return {
           ...value.state,
+          plan: {
+            ...value.state.plan,
+            preferences: normalizedPreferences(value.state.plan.preferences),
+          },
           mapStyle: value.state.mapStyle ?? DEFAULT_MAP_STYLE,
           overlay: value.state.overlay ?? DEFAULT_OVERLAY,
           interaction: value.state.interaction ?? "edit",

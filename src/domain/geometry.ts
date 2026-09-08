@@ -91,6 +91,18 @@ export function closestSegment(
   }
   return best;
 }
+/**
+ * Whether a routed shape returns to where it started. Valhalla's `edge_walk`
+ * trace rejects closed shapes as ambiguous (error 443), so this decides which
+ * `shape_match` to ask for rather than paying for a failed attempt first.
+ */
+export function isClosedShape(points: Coordinate[]): boolean {
+  const first = points[0];
+  const last = points.at(-1);
+  if (!first || !last || points.length < 3) return false;
+  return distanceKm(first, last) < 0.02;
+}
+
 export function bearing(from: Coordinate, to: Coordinate): number {
   const lat1 = rad(from.lat);
   const lat2 = rad(to.lat);

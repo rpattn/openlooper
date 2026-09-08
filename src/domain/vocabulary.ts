@@ -135,3 +135,25 @@ export const travelModeName = (value?: string) => lookup(TRAVEL_MODE, value);
 export const travelTypeName = (value?: string) => lookup(TRAVEL_TYPE, value);
 export const sidewalkName = (value?: string) => lookup(SIDEWALK, value);
 export const cycleLaneName = (value?: string) => lookup(CYCLE_LANE, value);
+
+/**
+ * How a route's character score reads to a planner. The term is a comparison
+ * between candidates, not a rating of the route on its own, so the wording
+ * describes what the route is made of rather than how good it is.
+ */
+export function characterDescription(character?: number): string {
+  if (character === undefined) return "route character unavailable";
+  if (character >= 0.5) return "mostly paths and green space";
+  if (character >= 0.2) return "a good share of paths and green space";
+  if (character > -0.05) return "a mix of paths and roads";
+  if (character > -0.3) return "mainly roads";
+  return "mainly main roads";
+}
+
+/** What moving the route-character control will actually do to a route. */
+export function characterPreferenceHint(character: number): string {
+  if (character >= 0.8) return "Strongly prefers paths, even when they are longer";
+  if (character >= 0.55) return "Prefers paths and pavements where they exist";
+  if (character >= 0.3) return "Balances paths against getting there directly";
+  return "Takes the direct way, main roads included";
+}

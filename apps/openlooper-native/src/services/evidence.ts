@@ -1,13 +1,30 @@
 import type { RouteEdge, RouteResult, RouteUseEvidence } from '../../../../src/domain/models';
+import { encodePolyline } from '../../../../src/routing/valhalla-mapper';
 import { EVIDENCE_URL as BASE } from './endpoints';
 
-function edgeRequest(route: RouteResult, edge: RouteEdge) {
+/**
+ * One route as index ranges into its own shape. The service already holds the
+ * way geometry, so sending each edge's coordinates again was the largest body
+ * on the wire; the shape travels once as its encoded polyline instead.
+ */
+function routeRequest(route: RouteResult, edges: RouteEdge[]) {
   return {
-    wayId: edge.attributes.wayId,
-    coordinates: route.geometry
-      .slice(edge.beginIndex, edge.endIndex + 1)
-      .map((point) => [point.lon, point.lat]),
+    encodedPolyline: route.encodedShape ?? encodePolyline(route.geometry),
+    edges: edges.map((edge) => ({
+      wayId: edge.attributes.wayId,
+      beginIndex: edge.beginIndex,
+      endIndex: edge.endIndex,
+    })),
   };
+}
+
+type SourceBreakdown = Record<string, { evidencedFraction: number }>;
+
+function shares(bySource?: SourceBreakdown): Record<string, number> | undefined {
+  if (!bySource) return undefined;
+  return Object.fromEntries(
+    Object.entries(bySource).map(([source, value]) => [source, value.evidencedFraction]),
+  );
 }
 
 const unavailable = () => ({
@@ -26,10 +43,11 @@ export async function routeEvidence(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        edges: edges.map((edge) => edgeRequest(route, edge)),
+        ...routeRequest(route, edges),
         // Segments carry the way ids the recorded-use colouring needs. Only the
         // selected route asks for them; ranking many candidates does not.
         includeSegments: true,
+        breakdown: true,
       }),
       signal,
     });
@@ -37,12 +55,14 @@ export async function routeEvidence(
     const data = (await response.json()) as {
       evidencedDistanceM: number;
       evidencedFraction: number;
+      bySource?: SourceBreakdown;
       segments?: GeoJSON.FeatureCollection;
     };
     return {
       status: 'available',
       evidencedDistanceKm: data.evidencedDistanceM / 1000,
       evidencedDistancePct: data.evidencedFraction * 100,
+      bySource: shares(data.bySource),
       segments: data.segments,
     };
   } catch (error) {
@@ -61,16 +81,22 @@ export async function routeEvidenceBatch(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         includeSegments: false,
+        breakdown: true,
         routes: routes.map(({ id, route, edges }) => ({
           id,
-          edges: edges.map((edge) => edgeRequest(route, edge)),
+          ...routeRequest(route, edges),
         })),
       }),
       signal,
     });
     if (!response.ok) throw new Error('Evidence unavailable');
     const data = (await response.json()) as {
-      routes: Array<{ id: string; evidencedDistanceM: number; evidencedFraction: number }>;
+      routes: Array<{
+        id: string;
+        evidencedDistanceM: number;
+        evidencedFraction: number;
+        bySource?: SourceBreakdown;
+      }>;
     };
     return new Map(
       data.routes.map((result) => [
@@ -79,6 +105,7 @@ export async function routeEvidenceBatch(
           status: 'available' as const,
           evidencedDistanceKm: result.evidencedDistanceM / 1000,
           evidencedDistancePct: result.evidencedFraction * 100,
+          bySource: shares(result.bySource),
         },
       ]),
     );

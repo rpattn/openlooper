@@ -281,7 +281,44 @@ def viewport_features(
     return features, sql_ms, (time.perf_counter() - started_geometry) * 1000
 
 
-def parse_edges(raw_edges: object) -> tuple[list[dict], set[int]]:
+def decode_polyline(encoded: str, precision: int = 6) -> list[tuple[float, float]]:
+    """Decodes a Valhalla polyline into (lon, lat) pairs."""
+    index = 0
+    lat = 0
+    lon = 0
+    factor = 10**precision
+    points: list[tuple[float, float]] = []
+    length = len(encoded)
+    while index < length:
+        for which in range(2):
+            shift = 0
+            result = 0
+            while True:
+                if index >= length:
+                    raise RequestError("encodedPolyline is truncated")
+                byte = ord(encoded[index]) - 63
+                index += 1
+                result |= (byte & 0x1F) << shift
+                shift += 5
+                if byte < 0x20:
+                    break
+            delta = ~(result >> 1) if result & 1 else result >> 1
+            if which == 0:
+                lat += delta
+            else:
+                lon += delta
+        points.append((lon / factor, lat / factor))
+    return points
+
+
+def parse_edges(raw_edges: object, shape: list[tuple[float, float]] | None = None) -> tuple[list[dict], set[int]]:
+    """Reads the edges of one route.
+
+    An edge may carry its own `coordinates`, or — when the route supplied an
+    `encodedPolyline` — a `beginIndex`/`endIndex` range into that shape. The
+    range form exists because the service already holds the way geometry, so
+    re-sending every coordinate per edge was the largest body on the wire.
+    """
     if not isinstance(raw_edges, list):
         raise RequestError("edges must be an array")
     edges: list[dict] = []
@@ -290,6 +327,14 @@ def parse_edges(raw_edges: object) -> tuple[list[dict], set[int]]:
         if not isinstance(raw_edge, dict):
             continue
         coordinates = raw_edge.get("coordinates")
+        if coordinates is None and shape is not None:
+            begin = raw_edge.get("beginIndex")
+            end = raw_edge.get("endIndex")
+            if not isinstance(begin, int) or not isinstance(end, int):
+                continue
+            if not 0 <= begin < end < len(shape):
+                continue
+            coordinates = [list(point) for point in shape[begin : end + 1]]
         if (
             not isinstance(coordinates, list)
             or len(coordinates) < 2
@@ -312,7 +357,11 @@ def parse_edges(raw_edges: object) -> tuple[list[dict], set[int]]:
 
 
 def evidence_response(
-    route_distance: float, evidenced_distance: float, features: list[dict], include_segments: bool
+    route_distance: float,
+    evidenced_distance: float,
+    features: list[dict],
+    include_segments: bool,
+    by_source: dict[str, float] | None = None,
 ) -> dict:
     fraction = min(1.0, evidenced_distance / route_distance) if route_distance else 0.0
     response = {
@@ -320,16 +369,34 @@ def evidence_response(
         "evidencedDistanceM": round(evidenced_distance, 3),
         "evidencedFraction": round(fraction, 6),
     }
+    if by_source is not None:
+        # Per-source distance sums the overlaps of the sections carrying that
+        # source. Sections are consecutive substrings of one way, so their flat
+        # buffers meet rather than overlap and the sum tracks the union closely;
+        # it is a ranking input, not a replacement for `evidencedDistanceM`.
+        response["bySource"] = {
+            source: {
+                "evidencedDistanceM": round(min(distance, route_distance), 3),
+                "evidencedFraction": round(
+                    min(1.0, distance / route_distance) if route_distance else 0.0, 6
+                ),
+            }
+            for source, distance in sorted(by_source.items())
+            if distance > 0
+        }
     if include_segments:
         response["segments"] = {"type": "FeatureCollection", "features": features}
     return response
 
 
 def calculate_route_evidence(
-    edges: list[dict], sections_by_way: dict[int, dict[str, dict]], include_segments: bool
+    edges: list[dict],
+    sections_by_way: dict[int, dict[str, dict]],
+    include_segments: bool,
+    breakdown: bool = False,
 ) -> dict:
     if not edges:
-        return evidence_response(0.0, 0.0, [], include_segments)
+        return evidence_response(0.0, 0.0, [], include_segments, {} if breakdown else None)
     projected_edges = shapely.transform(
         np.asarray([edge["wgs84"] for edge in edges], dtype=object), _project_coordinates
     )
@@ -339,6 +406,7 @@ def calculate_route_evidence(
         if edge["way_id"] is not None:
             edges_by_way[edge["way_id"]].append(projected)
     evidenced_distance = 0.0
+    by_source: dict[str, float] = defaultdict(float)
     features: list[dict] = []
     for way_id, way_edges in edges_by_way.items():
         sections = list(sections_by_way.get(way_id, {}).values())
@@ -347,12 +415,23 @@ def calculate_route_evidence(
         edge_geometries = np.asarray(way_edges, dtype=object)
         buffers = np.asarray([section["buffered"] for section in sections], dtype=object)
         overlaps = shapely.intersection(edge_geometries[:, np.newaxis], buffers[np.newaxis, :])
-        useful_mask = (~shapely.is_empty(overlaps)) & (shapely.length(overlaps) > 0.01)
+        overlap_lengths = shapely.length(overlaps)
+        useful_mask = (~shapely.is_empty(overlaps)) & (overlap_lengths > 0.01)
         for row, mask in zip(overlaps, useful_mask):
             useful = row[mask]
             if len(useful):
                 # Union per supplied edge so a separately supplied repeated traversal counts again.
                 evidenced_distance += float(shapely.length(shapely.unary_union(useful)))
+        if breakdown:
+            # Reuses the lengths already computed, so a breakdown costs no extra
+            # geometry work — only a masked sum per source present on this way.
+            contributions = np.where(useful_mask, overlap_lengths, 0.0).sum(axis=0)
+            for section_index, section in enumerate(sections):
+                contribution = float(contributions[section_index])
+                if contribution <= 0:
+                    continue
+                for source in section["sources"]:
+                    by_source[source] += contribution
         if include_segments:
             useful_indexes = np.argwhere(useful_mask)
             if len(useful_indexes):
@@ -377,7 +456,28 @@ def calculate_route_evidence(
                             "geometry": mapping(overlap),
                         }
                     )
-    return evidence_response(route_distance, evidenced_distance, features, include_segments)
+    return evidence_response(
+        route_distance, evidenced_distance, features, include_segments, dict(by_source) if breakdown else None
+    )
+
+
+def route_shape(payload: dict) -> list[tuple[float, float]] | None:
+    encoded = payload.get("encodedPolyline")
+    if encoded is None:
+        return None
+    if not isinstance(encoded, str) or not encoded:
+        raise RequestError("encodedPolyline must be a non-empty string")
+    shape = decode_polyline(encoded)
+    if len(shape) < 2:
+        raise RequestError("encodedPolyline must decode to at least two points")
+    return shape
+
+
+def breakdown_requested(payload: dict) -> bool:
+    value = payload.get("breakdown", False)
+    if not isinstance(value, bool):
+        raise RequestError("breakdown must be a Boolean")
+    return value
 
 
 def route_evidence(payload: dict) -> tuple[dict, float, float]:
@@ -385,15 +485,16 @@ def route_evidence(payload: dict) -> tuple[dict, float, float]:
     include_segments = payload.get("includeSegments", True)
     if not isinstance(include_segments, bool):
         raise RequestError("includeSegments must be a Boolean")
+    breakdown = breakdown_requested(payload)
     started_geometry = time.perf_counter()
-    edges, way_ids = parse_edges(payload.get("edges"))
+    edges, way_ids = parse_edges(payload.get("edges"), route_shape(payload))
     parse_ms = (time.perf_counter() - started_geometry) * 1000
     started_sql = time.perf_counter()
     sections_by_way = section_rows_for_ways(worker_database(), way_ids, requested_sources)
     sql_ms = (time.perf_counter() - started_sql) * 1000
     started_geometry = time.perf_counter()
     cached_section_geometry(sections_by_way)
-    result = calculate_route_evidence(edges, sections_by_way, include_segments)
+    result = calculate_route_evidence(edges, sections_by_way, include_segments, breakdown)
     return result, sql_ms, parse_ms + (time.perf_counter() - started_geometry) * 1000
 
 
@@ -411,6 +512,7 @@ def batch_route_evidence(payload: dict) -> tuple[dict, float, float]:
     include_segments = payload.get("includeSegments", False)
     if not isinstance(include_segments, bool):
         raise RequestError("includeSegments must be a Boolean")
+    breakdown = breakdown_requested(payload)
     parsed_routes: list[tuple[object, list[dict]]] = []
     identifiers: set[object] = set()
     way_ids: set[int] = set()
@@ -422,7 +524,7 @@ def batch_route_evidence(payload: dict) -> tuple[dict, float, float]:
         if identifier in identifiers:
             raise RequestError("Batch route ids must be unique")
         identifiers.add(identifier)
-        edges, route_way_ids = parse_edges(route.get("edges"))
+        edges, route_way_ids = parse_edges(route.get("edges"), route_shape(route))
         parsed_routes.append((identifier, edges))
         way_ids.update(route_way_ids)
     parse_ms = (time.perf_counter() - started_geometry) * 1000
@@ -432,7 +534,7 @@ def batch_route_evidence(payload: dict) -> tuple[dict, float, float]:
     started_geometry = time.perf_counter()
     cached_section_geometry(sections_by_way)
     results = [
-        {"id": identifier, **calculate_route_evidence(edges, sections_by_way, include_segments)}
+        {"id": identifier, **calculate_route_evidence(edges, sections_by_way, include_segments, breakdown)}
         for identifier, edges in parsed_routes
     ]
     return {"routes": results}, sql_ms, parse_ms + (time.perf_counter() - started_geometry) * 1000

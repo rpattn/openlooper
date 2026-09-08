@@ -565,11 +565,23 @@ export function RouteMap({
     };
   }, [mapApiRef]);
 
+  // Depends on the slices `updateSources` actually reads, not on the whole
+  // state. Rebuilding every GeoJSON source on an unrelated change — a progress
+  // message during loop generation, say — costs more the more routes are held.
   useEffect(() => {
     const instance = map.current;
     if (instance?.isStyleLoaded())
       updateSources(instance, state, showSelectedRouteEvidence);
-  }, [state, showSelectedRouteEvidence]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    state.selectedRoute,
+    state.alternatives,
+    state.highlightedIssueId,
+    state.highlightedEdgeIndex,
+    state.profilePoint,
+    state.plan.activity,
+    showSelectedRouteEvidence,
+  ]);
 
   useEffect(() => {
     const instance = map.current;

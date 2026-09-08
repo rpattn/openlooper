@@ -21,6 +21,7 @@ import {
   formatShortDistance,
 } from '../../../../src/domain/units';
 import {
+  characterPreferenceHint,
   cycleLaneName,
   roadClassName,
   sidewalkName,
@@ -31,6 +32,7 @@ import {
 import { OVERLAY_LABEL } from '../../../../src/domain/route-overlays';
 import type { ColourSpan, LegendEntry } from '../../../../src/domain/route-overlays';
 import type { RouteSeries } from '../../../../src/domain/route-series';
+import type { SurfaceTolerance } from '../../../../src/domain/models';
 import { COLOR, RADIUS, SHADOW } from '@/theme';
 import { ACTIVITY, CREATION_MODES } from '@/domain/models';
 import { NOMINATIM_URL } from '@/services/endpoints';
@@ -304,8 +306,9 @@ export function PlannerSheet(props: Props) {
                   Distance −{alternative.metrics.distancePenaltyPoints.toFixed(1)} · Repetition −
                   {alternative.metrics.repetitionPenaltyPoints.toFixed(1)} · Geometry −
                   {alternative.metrics.geometryPenaltyPoints.toFixed(1)} · Issues −
-                  {alternative.metrics.issuePenaltyPoints.toFixed(1)} · Evidence +
-                  {alternative.metrics.evidenceBonusPoints.toFixed(1)} · Final{' '}
+                  {alternative.metrics.issuePenaltyPoints.toFixed(1)} · Character{' '}
+                  {alternative.metrics.characterPoints >= 0 ? '+' : '−'}
+                  {Math.abs(alternative.metrics.characterPoints).toFixed(1)} · Final{' '}
                   {alternative.metrics.score.toFixed(1)}
                 </Text>
               )}
@@ -583,47 +586,69 @@ function PointsPanel(props: Props & { accent: string }) {
 function Preferences(props: Props & { accent: string }) {
   const { state, accent } = props;
   const pref = state.plan.preferences;
+  const tolerances: Array<{ value: SurfaceTolerance; label: string }> = [
+    { value: 'paved', label: 'Paved only' },
+    { value: 'firm', label: 'Firm paths too' },
+    { value: 'any', label: 'Anything' },
+  ];
   return (
     <>
-      {state.plan.activity === 'cycle' ? (
-        <>
-          <PreferenceSlider
-            label="Road comfort"
-            value={pref.roadComfort}
-            accent={accent}
-            onChange={(roadComfort) => props.onPreferences({ ...pref, roadComfort })}
-          />
-          <Toggle
-            label="Prefer paved surfaces"
-            value={pref.pavedPreference}
-            onChange={(pavedPreference) => props.onPreferences({ ...pref, pavedPreference })}
-          />
-          <Text style={styles.disclaimer}>
-            Higher comfort favours lower-road-use routing and recorded cycling infrastructure; it is
-            not a guarantee.
-          </Text>
-        </>
-      ) : (
-        <>
-          <PreferenceSlider
-            label="Prefer paths & pavements"
-            value={pref.pathPreference}
-            accent={accent}
-            onChange={(pathPreference) => props.onPreferences({ ...pref, pathPreference })}
-          />
-          <Toggle
-            label="Prefer to avoid steps"
-            value={pref.avoidSteps}
-            onChange={(avoidSteps) => props.onPreferences({ ...pref, avoidSteps })}
-          />
-        </>
-      )}
       <PreferenceSlider
-        label="Hill preference"
+        label="Route character"
+        value={pref.character}
+        accent={accent}
+        onChange={(character) => props.onPreferences({ ...pref, character })}
+      />
+      <View style={styles.scaleEnds}>
+        <Text style={styles.scaleEnd}>Direct &amp; paved</Text>
+        <Text style={styles.scaleEnd}>Green &amp; quiet</Text>
+      </View>
+      <Text style={styles.disclaimer}>{characterPreferenceHint(pref.character)}</Text>
+      <Text style={styles.label}>Surface</Text>
+      <View style={styles.choiceRow}>
+        {tolerances.map((option) => (
+          <ChoiceButton
+            key={option.value}
+            label={option.label}
+            selected={pref.surfaceTolerance === option.value}
+            accent={accent}
+            onPress={() => props.onPreferences({ ...pref, surfaceTolerance: option.value })}
+          />
+        ))}
+      </View>
+      <Text style={styles.disclaimer}>
+        What to route over. Recorded surfaces are incomplete, so this steers the route rather than
+        guaranteeing what you will find.
+      </Text>
+      <PreferenceSlider
+        label="Hills"
         value={pref.hillPreference}
         accent={accent}
         onChange={(hillPreference) => props.onPreferences({ ...pref, hillPreference })}
       />
+      <View style={styles.scaleEnds}>
+        <Text style={styles.scaleEnd}>Flattest</Text>
+        <Text style={styles.scaleEnd}>Seek hills</Text>
+      </View>
+      <Text style={styles.label}>Avoid</Text>
+      <Toggle
+        label="Steps"
+        value={pref.avoidSteps}
+        onChange={(avoidSteps) => props.onPreferences({ ...pref, avoidSteps })}
+      />
+      {state.plan.activity !== 'cycle' && (
+        <>
+          <Toggle
+            label="Unlit roads where recorded"
+            value={pref.preferLit}
+            onChange={(preferLit) => props.onPreferences({ ...pref, preferLit })}
+          />
+          <Text style={styles.disclaimer}>
+            Lighting is recorded on about a tenth of local ways, and the ways that carry it are
+            mostly main roads: preferring lit sections makes routes longer and busier.
+          </Text>
+        </>
+      )}
     </>
   );
 }
@@ -645,11 +670,15 @@ function distanceDelta(state: PlannerState, units: UnitSystem): string | undefin
 /** The preferences in a phrase, so the panel says what it is set to while shut. */
 function preferenceSummary(state: PlannerState): string {
   const pref = state.plan.preferences;
-  const parts =
-    state.plan.activity === 'cycle'
-      ? [`${Math.round(pref.roadComfort * 100)}% quiet roads`, pref.pavedPreference ? 'paved' : 'any surface']
-      : [`${Math.round(pref.pathPreference * 100)}% paths`, pref.avoidSteps ? 'avoids steps' : 'steps allowed'];
-  return [...parts, `${Math.round(pref.hillPreference * 100)}% hills`].join(' · ');
+  const surface = { paved: 'paved only', firm: 'firm paths too', any: 'any surface' }[
+    pref.surfaceTolerance
+  ];
+  return [
+    characterPreferenceHint(pref.character).toLowerCase(),
+    surface,
+    pref.avoidSteps ? 'avoids steps' : 'steps allowed',
+    `${Math.round(pref.hillPreference * 100)}% hills`,
+  ].join(' · ');
 }
 
 /** What the very first tap on the map will do, in the words the tools use. */
@@ -688,7 +717,7 @@ function DeveloperSettings(props: Props & { accent: string }) {
     { key: 'repetition', label: 'Repetition', max: 50 },
     { key: 'geometry', label: 'Loop geometry', max: 30 },
     { key: 'issues', label: 'Route issues', max: 70 },
-    { key: 'evidence', label: 'Evidence bonus', max: 15 },
+    { key: 'character', label: 'Route character', max: 50 },
   ];
   return (
     <>
@@ -781,6 +810,9 @@ const styles = StyleSheet.create({
   prompt: { gap: 4, padding: 12, borderRadius: RADIUS.panel, borderWidth: 1.5, backgroundColor: COLOR.raised },
   promptTitle: { color: COLOR.ink, fontSize: 14, fontWeight: '900' },
   disclaimer: { color: COLOR.muted, fontSize: 10, lineHeight: 15 },
+  scaleEnds: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 2 },
+  scaleEnd: { color: COLOR.muted, fontSize: 10 },
+  choiceRow: { flexDirection: 'row', gap: 6 },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   sectionTitle: { color: COLOR.ink, fontSize: 14, fontWeight: '900' },
   toggleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },

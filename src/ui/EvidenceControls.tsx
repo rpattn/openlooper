@@ -19,6 +19,16 @@ type Props = {
   hasRoute: boolean;
 };
 
+/**
+ * The overlay lists sources under what they actually claim, so a recorded
+ * right of way is never read as somebody having been recorded walking it.
+ */
+const KIND_GROUPS = [
+  { kind: "use", label: "Recorded use" },
+  { kind: "status", label: "Recorded designation" },
+  { kind: "context", label: "Recorded surroundings" },
+] as const;
+
 export function EvidenceControls(props: Props) {
   const available = Boolean(props.status?.ready);
   const sliders: Array<{
@@ -30,7 +40,7 @@ export function EvidenceControls(props: Props) {
     { key: "repetition", label: "Repetition", max: 50 },
     { key: "geometry", label: "Loop geometry", max: 30 },
     { key: "issues", label: "Route issues", max: 70 },
-    { key: "evidence", label: "Evidence bonus", max: 15 },
+    { key: "character", label: "Route character", max: 50 },
   ];
   return (
     <details className="panel-section evidence-controls">
@@ -51,11 +61,20 @@ export function EvidenceControls(props: Props) {
         >
           <option value="off">Off</option>
           <option value="any">Any evidence</option>
-          {(props.status?.sources ?? []).map((source) => (
-            <option key={source.source_id} value={source.source_id}>
-              {source.label}
-            </option>
-          ))}
+          {KIND_GROUPS.map(({ kind, label }) => {
+            const sources = (props.status?.sources ?? []).filter(
+              (source) => source.kind === kind,
+            );
+            return sources.length ? (
+              <optgroup key={kind} label={label}>
+                {sources.map((source) => (
+                  <option key={source.source_id} value={source.source_id}>
+                    {source.label}
+                  </option>
+                ))}
+              </optgroup>
+            ) : null;
+          })}
         </select>
       </label>
       <div className="viewport-evidence-state" aria-live="polite">
@@ -83,7 +102,7 @@ export function EvidenceControls(props: Props) {
               checked={props.evidenceRanking}
               onChange={(event) => props.onEvidenceRanking(event.target.checked)}
             />
-            Rank completed candidates with evidence
+            Rank completed candidates on route character
           </label>
           <div className="scoring-sliders">
             {sliders.map(({ key, label, max }) => (

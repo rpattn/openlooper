@@ -18,7 +18,9 @@ import type {
   PlannerState,
   RouteIssue,
   RoutingPreferences,
+  SurfaceTolerance,
 } from "../domain/models";
+import { characterPreferenceHint } from "../domain/vocabulary";
 import { ActivitySelector } from "./ActivitySelector";
 import { ElevationProfile } from "./ElevationProfile";
 import { EdgeDetails } from "./EdgeDetails";
@@ -238,80 +240,54 @@ export function PlannerSheet(p: Props) {
         )}
         <details className="panel-section preferences">
           <summary>Route preferences</summary>
-          {state.plan.activity === "cycle" ? (
-            <>
-              <label>
-                Road comfort{" "}
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step=".1"
-                  value={pref.roadComfort}
-                  onChange={(e) =>
-                    p.onPreferences({
-                      ...pref,
-                      roadComfort: Number(e.target.value),
-                    })
-                  }
-                />
-                <small>
-                  Higher values favour lower-road-use routing and recorded
-                  cycling infrastructure, not a guarantee
-                </small>
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={pref.pavedPreference}
-                  onChange={(e) =>
-                    p.onPreferences({
-                      ...pref,
-                      pavedPreference: e.target.checked,
-                    })
-                  }
-                />{" "}
-                Prefer paved surfaces
-              </label>
-            </>
-          ) : (
-            <>
-              <label>
-                Prefer paths & pavements{" "}
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step=".1"
-                  value={pref.pathPreference}
-                  onChange={(e) =>
-                    p.onPreferences({
-                      ...pref,
-                      pathPreference: Number(e.target.value),
-                    })
-                  }
-                />
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={pref.avoidSteps}
-                  onChange={(e) =>
-                    p.onPreferences({ ...pref, avoidSteps: e.target.checked })
-                  }
-                />{" "}
-                Prefer to avoid steps
-              </label>
-            </>
-          )}
+          <label className="preference-scale">
+            Route character
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step=".05"
+              value={pref.character}
+              aria-label="Route character, from direct and paved to green and quiet"
+              onChange={(e) =>
+                p.onPreferences({ ...pref, character: Number(e.target.value) })
+              }
+            />
+            <span className="scale-ends">
+              <span>Direct &amp; paved</span>
+              <span>Green &amp; quiet</span>
+            </span>
+            <small>{characterPreferenceHint(pref.character)}</small>
+          </label>
           <label>
-            Hill preference{" "}
+            Surface
+            <select
+              value={pref.surfaceTolerance}
+              onChange={(e) =>
+                p.onPreferences({
+                  ...pref,
+                  surfaceTolerance: e.target.value as SurfaceTolerance,
+                })
+              }
+            >
+              <option value="paved">Paved only</option>
+              <option value="firm">Firm paths too</option>
+              <option value="any">Anything, including tracks</option>
+            </select>
+            <small>
+              What to route over. Recorded surfaces are incomplete, so this
+              steers the route rather than guaranteeing what you will find.
+            </small>
+          </label>
+          <label className="preference-scale">
+            Hills
             <input
               type="range"
               min="0"
               max="1"
               step=".1"
               value={pref.hillPreference}
+              aria-label="Hill preference, from flattest to seek hills"
               onChange={(e) =>
                 p.onPreferences({
                   ...pref,
@@ -319,7 +295,41 @@ export function PlannerSheet(p: Props) {
                 })
               }
             />
+            <span className="scale-ends">
+              <span>Flattest</span>
+              <span>Seek hills</span>
+            </span>
           </label>
+          <fieldset className="preference-avoid">
+            <legend>Avoid</legend>
+            <label>
+              <input
+                type="checkbox"
+                checked={pref.avoidSteps}
+                onChange={(e) =>
+                  p.onPreferences({ ...pref, avoidSteps: e.target.checked })
+                }
+              />{" "}
+              Steps
+            </label>
+            {state.plan.activity !== "cycle" && (
+              <label>
+                <input
+                  type="checkbox"
+                  checked={pref.preferLit}
+                  onChange={(e) =>
+                    p.onPreferences({ ...pref, preferLit: e.target.checked })
+                  }
+                />{" "}
+                Unlit roads where recorded
+              </label>
+            )}
+            <small>
+              Lighting is recorded on about a tenth of local ways, and the ways
+              that carry it are mostly main roads: preferring lit sections makes
+              routes longer and busier.
+            </small>
+          </fieldset>
         </details>
         {p.evidenceControls}
         {state.loading && (
@@ -359,8 +369,9 @@ export function PlannerSheet(p: Props) {
                       Repetition −
                       {a.metrics.repetitionPenaltyPoints.toFixed(1)} · Geometry −
                       {a.metrics.geometryPenaltyPoints.toFixed(1)} · Issues −
-                      {a.metrics.issuePenaltyPoints.toFixed(1)} · Evidence +
-                      {a.metrics.evidenceBonusPoints.toFixed(1)} · Final{" "}
+                      {a.metrics.issuePenaltyPoints.toFixed(1)} · Character{" "}
+                      {a.metrics.characterPoints >= 0 ? "+" : "−"}
+                      {Math.abs(a.metrics.characterPoints).toFixed(1)} · Final{" "}
                       {a.metrics.score.toFixed(1)}
                     </span>
                   )}

@@ -2,18 +2,17 @@ import * as Location from 'expo-location';
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 
 import { distanceKm, routeBounds } from '../../../../src/domain/geometry';
-import { loopSeeds, scaleLoop } from '../../../../src/domain/loops';
+import { CONTOUR_FRACTIONS, loopSeeds, scaleLoop } from '../../../../src/domain/loops';
 import { analyzeRoute, mapEdges } from '../../../../src/domain/route-analysis';
 import {
-  DEFAULT_LOOP_SCORING_WEIGHTS,
-  hasDisconnectedJump,
   LOOP_LIMITS,
-  repeatedCoverage,
+  rankCandidates,
   repetitionDescription,
   routeSimilarity,
   scoreRoute,
-  surfaceConcernPercentage,
+  scoringWeightsFor,
 } from '../../../../src/domain/route-scoring';
+import { characterDescription } from '../../../../src/domain/vocabulary';
 import type {
   Activity,
   Coordinate,
@@ -32,7 +31,7 @@ import { insertionIndex } from '@/domain/route-positions';
 import { closedLoop, editableWaypoints, loopAnchors, openLoop } from '@/domain/waypoints';
 import { routeEvidence, routeEvidenceBatch } from '@/services/evidence';
 import { persistPlanner, restorePlanner } from '@/services/persistence';
-import { requestRoute, traceRoute } from '@/services/routing';
+import { distanceContour, requestRoute, traceRoute } from '@/services/routing';
 import { initialPlannerState, normalizedWaypoints, plannerReducer, routePlan } from '@/state/planner';
 
 async function pool<T, R>(
@@ -57,14 +56,13 @@ async function pool<T, R>(
 }
 
 function loopLabel(result: RouteResult, metrics: NonNullable<RouteAlternative['metrics']>) {
-  const evidence = result.useEvidence?.status === 'available'
-    ? `${Math.round(result.useEvidence.evidencedDistancePct)}% evidenced distance`
-    : 'evidenced distance unavailable';
   return [
     `${Math.round(metrics.distanceError * 100)}% target error`,
     repetitionDescription(metrics.repeatedCoverage),
-    `${Math.round(surfaceConcernPercentage(result))}% recorded unpaved/rough concern`,
-    evidence,
+    characterDescription(metrics.character),
+    result.useEvidence?.status === 'available'
+      ? `${Math.round(result.useEvidence.evidencedDistancePct)}% evidenced distance`
+      : 'evidenced distance unavailable',
   ].join(' · ');
 }
 
@@ -88,11 +86,19 @@ export function usePlanner() {
   const [state, dispatch] = useReducer(plannerReducer, initialPlannerState);
   const [restored, setRestored] = useState(false);
   const [evidenceRanking, setEvidenceRanking] = useState(true);
-  const [scoringWeights, setScoringWeights] = useState<LoopScoringWeights>(DEFAULT_LOOP_SCORING_WEIGHTS);
+  const [scoringWeights, setScoringWeights] = useState<LoopScoringWeights>(scoringWeightsFor(state.plan.activity));
   const [fitRequest, setFitRequest] = useState(0);
   const [locating, setLocating] = useState(false);
   const evidenceRankingRef = useRef(evidenceRanking);
   const scoringWeightsRef = useRef(scoringWeights);
+  const activity = state.plan.activity;
+  // What counts as a good route differs by activity, so the weights follow it.
+  // Any development-only override is deliberately dropped on the change.
+  useEffect(() => {
+    const weights = scoringWeightsFor(activity);
+    scoringWeightsRef.current = weights;
+    setScoringWeights(weights);
+  }, [activity]);
   const currentState = useRef(state);
   const controller = useRef<AbortController | undefined>(undefined);
   const requestId = useRef(0);
@@ -282,45 +288,53 @@ export function usePlanner() {
     const abort = new AbortController();
     controller.current = abort;
     const id = ++requestId.current;
-    dispatch({ type: 'routeStart', progress: 'Trying 12 loop shapes…' });
+    dispatch({ type: 'routeStart', progress: 'Measuring how far you can get…' });
     // Generating replaces the shape wholesale, so the planner is no longer
     // tuning the one that was on screen.
     dispatch({ type: 'loopTuned', tuned: false });
-    const seeds = loopSeeds(start, target, current.loopSeed, loopAnchors(plan.waypoints));
     const basePlan = { ...plan, mode: 'loop' as const };
+    const anchors = loopAnchors(plan.waypoints);
     try {
-      const initial = await pool(seeds, LOOP_LIMITS.maxConcurrent, async (seed, index) => {
+      // One request describes how far the network actually reaches in every
+      // direction, which is what the shaping points are then placed on.
+      const [triangle, diamond] = await Promise.all(
+        [CONTOUR_FRACTIONS.triangle, CONTOUR_FRACTIONS.diamond].map((fraction) =>
+          distanceContour(start, target / fraction, basePlan.activity, basePlan.preferences, abort.signal),
+        ),
+      );
+      const seeds = loopSeeds(start, target, current.loopSeed, anchors, { triangle, diamond });
+      dispatch({ type: 'progress', progress: 'Trying 12 loop shapes…' });
+      const initial = await pool(seeds, LOOP_LIMITS.seedConcurrency, async (seed) => {
         if (abort.signal.aborted) throw Object.assign(new Error('Aborted'), { name: 'AbortError' });
-        dispatch({ type: 'progress', progress: `Trying loop shapes… ${index + 1}/12` });
         const [result] = await requestRoute({ ...basePlan, waypoints: seed.waypoints }, abort.signal, false);
         return { seed, result: result! };
       });
-      let viable = initial.flatMap((item) => item.status === 'fulfilled' ? [item.value] : []).filter((item) =>
-        Math.abs(item.result.distanceKm - target) / target <= LOOP_LIMITS.maxDistanceError &&
-        repeatedCoverage(item.result.geometry) <= LOOP_LIMITS.maxRepeatedCoverage &&
-        !hasDisconnectedJump(item.result.geometry, target),
-      );
-      viable = viable.sort((a, b) => scoreRoute(b.result, target, [], false, scoringWeightsRef.current).score - scoreRoute(a.result, target, [], false, scoringWeightsRef.current).score).slice(0, target > 20 ? 6 : target > 10 ? 8 : viable.length);
-      dispatch({ type: 'progress', progress: `Refining ${viable.length} promising loops…` });
-      const refined = await pool(viable, LOOP_LIMITS.maxConcurrent, async ({ seed, result }) => {
-        if (Math.abs(result.distanceKm - target) / target <= 0.03) return { seed, result };
+      const promising = rankCandidates(
+        initial.flatMap((item) => item.status === 'fulfilled' ? [item.value] : []),
+        target,
+        basePlan.activity,
+        scoringWeightsRef.current,
+      ).slice(0, target > 20 ? 6 : target > 10 ? 8 : seeds.length);
+      dispatch({ type: 'progress', progress: `Refining ${promising.length} promising loops…` });
+      const refined = await pool(promising, LOOP_LIMITS.refineConcurrency, async ({ seed, result, metrics }) => {
+        if (metrics.distanceError <= 0.03) return { seed, result };
         const factor = Math.max(LOOP_LIMITS.refinementMin, Math.min(LOOP_LIMITS.refinementMax, target / result.distanceKm));
         const adjusted = scaleLoop(seed, start, factor);
         const [route] = await requestRoute({ ...basePlan, waypoints: adjusted.waypoints }, abort.signal, false);
         return { seed: adjusted, result: route! };
       });
-      viable = refined.flatMap((item) => item.status === 'fulfilled' ? [item.value] : []).filter((item) =>
-        Math.abs(item.result.distanceKm - target) / target <= LOOP_LIMITS.maxDistanceError &&
-        repeatedCoverage(item.result.geometry) <= LOOP_LIMITS.maxRepeatedCoverage &&
-        !hasDisconnectedJump(item.result.geometry, target),
-      );
-      const shortlist = viable.sort((a, b) => scoreRoute(b.result, target, [], false, scoringWeightsRef.current).score - scoreRoute(a.result, target, [], false, scoringWeightsRef.current).score).slice(0, 6);
+      const shortlist = rankCandidates(
+        refined.flatMap((item) => item.status === 'fulfilled' ? [item.value] : []),
+        target,
+        basePlan.activity,
+        scoringWeightsRef.current,
+      ).slice(0, 6);
       dispatch({ type: 'progress', progress: 'Checking route surfaces and issues…' });
-      const attributed = await pool(shortlist, LOOP_LIMITS.maxConcurrent, async (item) => ({ ...item, result: await attributeGeometry(item.result, basePlan, abort.signal) }));
+      const attributed = await pool(shortlist, LOOP_LIMITS.traceConcurrency, async (item) => ({ ...item, result: await attributeGeometry(item.result, basePlan, abort.signal) }));
       const attributedRoutes = attributed.flatMap((item) => item.status === 'fulfilled' ? [item.value] : []);
       dispatch({ type: 'progress', progress: 'Checking route-use evidence…' });
       const evidence = await routeEvidenceBatch(attributedRoutes.map((item) => ({ id: item.result.id, route: item.result, edges: item.result.edges })), abort.signal);
-      const ranked = attributedRoutes.map((item) => ({ ...item, result: { ...item.result, useEvidence: evidence.get(item.result.id) } })).map((item) => ({ ...item, metrics: scoreRoute(item.result, target, item.result.issues, evidenceRankingRef.current, scoringWeightsRef.current) })).sort((a, b) => b.metrics.score - a.metrics.score);
+      const ranked = attributedRoutes.map((item) => ({ ...item, result: { ...item.result, useEvidence: evidence.get(item.result.id) } })).map((item) => ({ ...item, metrics: scoreRoute(item.result, target, item.result.issues, basePlan.activity, evidenceRankingRef.current, scoringWeightsRef.current) })).sort((a, b) => b.metrics.score - a.metrics.score);
       const distinct: typeof ranked = [];
       for (const item of ranked) {
         if (distinct.every((other) => routeSimilarity(item.result.geometry, other.result.geometry) <= LOOP_LIMITS.dedupeSimilarity)) distinct.push(item);
@@ -346,7 +360,7 @@ export function usePlanner() {
     if (current.plan.mode !== 'loop' || !current.alternatives.length) return;
     const target = current.plan.targetDistanceKm ?? 10;
     const alternatives = current.alternatives.map((item) => {
-      const metrics = scoreRoute(item.result, target, item.result.issues, enabled, weights);
+      const metrics = scoreRoute(item.result, target, item.result.issues, current.plan.activity, enabled, weights);
       return { ...item, metrics, label: loopLabel(item.result, metrics) };
     }).sort((a, b) => (b.metrics?.score ?? 0) - (a.metrics?.score ?? 0));
     dispatch({ type: 'alternatives', alternatives, preserveSelection: true });

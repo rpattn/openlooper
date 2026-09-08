@@ -79,10 +79,14 @@ function findings(attributes: EdgeAttributes, activity: Activity): Finding[] {
   if (use.includes("steps"))
     found.push({
       category: "steps",
-      severity: "high",
+      // Steps stop a bike; on foot they are a nuisance worth knowing about.
+      severity: activity === "cycle" ? "high" : "warning",
       confidence: "observed",
       title: "Steps recorded",
-      explanation: "Valhalla identifies this section as steps.",
+      explanation:
+        activity === "cycle"
+          ? "Valhalla identifies this section as steps; expect to dismount."
+          : "Valhalla identifies this section as steps.",
     });
   if (["motorway", "trunk", "primary"].some((value) => road.includes(value)))
     found.push({
@@ -92,23 +96,37 @@ function findings(attributes: EdgeAttributes, activity: Activity): Finding[] {
       title: "Potential issue: major-road section",
       explanation: `Recorded as a ${(roadClassName(attributes.roadClass) ?? "major road").toLowerCase()}; it may be unpleasant for this activity.`,
     });
-  if (
+  const difficultSurface = ["mud", "sand", "impassable"].some((value) =>
+    surface.includes(value),
+  );
+  const looseSurface =
     attributes.unpaved ||
-    ["dirt", "gravel", "earth", "mud", "rough", "impassable"].some((value) =>
-      surface.includes(value),
-    )
-  )
+    ["dirt", "gravel", "earth", "rough"].some((value) => surface.includes(value));
+  if (difficultSurface || looseSurface) {
+    // On foot a firm unpaved path is usually the reason for the route, so it is
+    // reported as a fact about the route rather than as a problem with it. Only
+    // mud, sand and impassable stay warnings for a walker or runner.
+    const onFoot = activity !== "cycle";
     found.push({
       category: "surface",
-      severity: surface.includes("impassable") ? "high" : "warning",
+      severity: surface.includes("impassable")
+        ? "high"
+        : difficultSurface || !onFoot
+          ? "warning"
+          : "info",
       confidence: surface.includes("impassable") ? "observed" : "potential",
       title: surface.includes("impassable")
         ? "Impassable surface recorded"
-        : attributes.unpaved
-          ? "Potential issue: unpaved section"
-          : "Potential issue: rough surface",
+        : difficultSurface
+          ? "Potential issue: soft or loose surface"
+          : onFoot
+            ? "Unpaved section"
+            : attributes.unpaved
+              ? "Potential issue: unpaved section"
+              : "Potential issue: rough surface",
       explanation: `Recorded as ${(surfaceName(attributes.surface) ?? "an unpaved surface").toLowerCase()}; suitability depends on conditions and your equipment.`,
     });
+  }
   const gradeMissing =
     (attributes.maxUpwardGrade ?? 0) <= -32000 ||
     (attributes.maxDownwardGrade ?? 0) <= -32000;

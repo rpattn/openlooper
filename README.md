@@ -10,15 +10,16 @@ The browser app uses OpenFreeMap globally and a local Valhalla instance for rout
 
 - Run, Walk, and Cycle A→B routing, including Valhalla alternatives for two-point routes.
 - Draggable, removable, reversible waypoints and a routed waypoint-sketch mode.
-- Activity-specific route preferences using claims Valhalla can actually represent.
-- Twelve-seed, distance-targeted loop generation with bounded concurrency, one refinement pass, deduplication, quality ranking, and up to three choices.
+- Activity-specific route preferences using claims Valhalla can actually represent: one route-character control, a surface tolerance, hills, and a separate list of things to avoid.
+- Twelve-seed, distance-targeted loop generation seeded from a measured distance contour, with per-phase concurrency, one refinement pass, deduplication, quality ranking, and up to three choices.
+- Activity-specific ranking with a route-character term built from recorded rights of way, greenspace, water, cycle networks and mode-classified GPS traces — the only part of the score a route can gain rather than only lose.
 - Generated loop shaping points are treated as approximate areas: Valhalla may use a natural route edge within 150 m rather than creating a spur merely to touch an arbitrary coordinate. User-selected waypoints remain exact.
 - Distance, duration, approximate ascent/descent, interactive elevation profile, and GPX 1.1 export.
 - Geographic route notes from normalized Valhalla attributes, with explicit uncertainty for absent OSM-derived data.
 - Click/tap inspection of attributed route segments, including normalized surface, road, infrastructure, grade, and recorded OSM-way details.
 - Submit-only Nominatim search, opt-in browser location, and map-selected starts.
 - Debounced restoration of the current map, plan, selected route, analysis, and loop alternatives after refresh.
-- Supported binary route-use evidence summaries and map overlays, prepared offline from current OSM route relations and the 2013 OSM GPS archive.
+- Supported binary route-use evidence summaries and map overlays, prepared offline from current OSM route relations, rights of way, greenspace and the mode-classified 2013 OSM GPS archive.
 - One responsive map/sheet interface for phone, tablet, and desktop widths.
 - Named routes saved on the device, listed with a drawn route card and reopened for viewing or editing. This is in the Expo client only; see `apps/openlooper-native/README.md`.
 
@@ -66,13 +67,13 @@ It talks to the same local Valhalla and evidence services. On web the Expo dev s
 
 For A→B, select an activity, use **Set start** and **Set finish**, then tap the map. If Valhalla supplies alternatives they appear beneath the summary. Drag either marker or add an intermediate point; multipoint routes deliberately stop requesting alternatives.
 
-For a loop, choose **Loop**, tap a start, set the target distance, and choose **Find loops**. OpenLooper tries 12 rotated triangle and diamond shapes with at most four active requests, reuses candidates already within 3% of the target, and refines the strongest remaining routes once (capped at eight above 10 km and six above 20 km). It analyzes the best six, removes near-duplicates, and presents up to three. Local street-network shape may yield fewer. Selecting a loop promotes its shaping points into the editable plan.
+For a loop, choose **Loop**, tap a start, set the target distance, and choose **Find loops**. OpenLooper first asks Valhalla how far the network actually reaches in every direction and places the shaping points on that contour rather than on a circle, then tries 12 rotated triangle and diamond shapes in one wave, scores each candidate once, reuses candidates already within 3% of the target, and refines the strongest remaining routes once with at most eight active requests (capped at eight candidates above 10 km and six above 20 km). It analyzes the best six, removes near-duplicates, and presents up to three. Local street-network shape may yield fewer. Selecting a loop promotes its shaping points into the editable plan.
 
 For a sketch, choose **Sketch** and tap rough places to pass. Each tap extends the provisional endpoint. Once there are two distinct points, tap the current endpoint to finish an open A→B route or tap the start marker to close and finish a loop. Completed sketches use the normal add, drag, remove, and reverse editing tools. This is waypoint sketching—Valhalla creates all final geometry.
 
-Route notes can be selected to focus their exact map section. Unknown sidewalk or cycle-lane values are described as “not recorded,” never as proof that infrastructure is absent. GPX exports the selected route as a single ordered track segment.
+Route notes can be selected to focus their exact map section. Notes that record an absence — unknown pavement, cycle lane, gradient or surface detail — are collapsed into one summary line beneath the real findings; they score nothing and burying the findings under them helped nobody. Unknown sidewalk or cycle-lane values are described as “not recorded,” never as proof that infrastructure is absent. GPX exports the selected route as a single ordered track segment.
 
-Click or tap a route to inspect the attributed edge beneath it; hovering changes only the pointer. A background click closes an open edge detail without editing the route. OpenLooper first asks Valhalla for an exact `edge_walk` trace; closed loops that Valhalla reports as ambiguous retry with its `walk_or_snap` fallback. Issue segments remain the higher-priority map interaction, while the explicit **Add point** tool takes priority over inspection.
+Click or tap a route to inspect the attributed edge beneath it; hovering changes only the pointer. A background click closes an open edge detail without editing the route. OpenLooper asks Valhalla for an exact `edge_walk` trace on open routes and goes straight to its `walk_or_snap` fallback on closed ones, which Valhalla rejects as ambiguous; an open route that still comes back ambiguous retries with the fallback. Issue segments remain the higher-priority map interaction, while the explicit **Add point** tool takes priority over inspection.
 
 ## Validation commands
 
@@ -97,15 +98,15 @@ Use `npm run routing:down` to stop the service. If startup stalls, inspect `rout
 
 The evidence layer asks only whether a short section of the current routing network has credible evidence of use. It does not calculate popularity, frequency, recency, activity, unique users, or negative evidence. **No route-use evidence means unknown, not unused, unsafe or unsuitable.**
 
-Preparation uses the exact `local-region.osm.pbf` used by Valhalla, divides current `highway=*` ways into deterministic 25 m sections, marks accepted current OSM route relations, then streams GPX members directly from the compressed 2013 archive. Only evidenced sections enter the SQLite output. Raw regional coordinates, timestamps, contributor metadata, track structure, ordering, and journeys are never retained.
+Preparation uses the exact `local-region.osm.pbf` used by Valhalla, divides current `highway=*` ways into deterministic 25 m sections, marks accepted current OSM route relations, rights of way, lighting, speed limits and proximity to recorded greenspace and water, then streams GPX members directly from the compressed 2013 archive. GPX timestamps are used to derive a speed and classify each coordinate as foot, cycle, vehicle or unclassified, so route-use evidence records *which mode* was recorded rather than only that something passed. Only evidenced sections enter the SQLite output. Raw regional coordinates, timestamps, contributor metadata, track structure, ordering, and journeys are never retained. A build takes about 40 minutes and prints progress every 30 seconds.
 
 The runtime service refuses to start unless the mounted PBF SHA-256 matches the database build metadata. Check it with `curl http://127.0.0.1:8003/status`; use `npm run evidence:logs` and `npm run evidence:down` for its lifecycle. Missing or stale evidence never blocks routing and gives no ranking bonus.
 
-The route summary reports the evidenced percentage in every build. The **Route-use evidence** control can show all viewport evidence or one human-labelled source and overlay evidenced/unknown portions of the selected route. Loop ranking requests summaries for the six shortlisted routes in one batch; segment GeoJSON is loaded only when a selected-route overlay is requested, so enabling an overlay never reroutes or reranks candidates.
+The route summary reports the evidenced percentage in every build. The **Route-use evidence** control can show all viewport evidence or one human-labelled source — grouped by whether it records use, a designation, or the way's surroundings — and overlay evidenced/unknown portions of the selected route. Loop ranking requests summaries for the six shortlisted routes in one batch; segment GeoJSON is loaded only when a selected-route overlay is requested, so enabling an overlay never reroutes or reranks candidates.
 
-The normal ranking allocates up to 5 mild bonus points for evidence. All sources have equal Boolean effect, unavailable or missing evidence remains neutral, and a route with any high-severity issue receives no evidence bonus. Raw scoring controls and diagnostics remain development-only.
+Ranking weights differ by activity, and the character term is worth 20–30 points depending on it. Sources are weighted by what they claim rather than counted equally: a recorded public footpath counts for more than being beside a wood, vehicle-speed GPS counts against a running route, and the undifferentiated `gps_unclassified_2013` class is excluded from ranking entirely because it tracks the road network rather than route quality. Unavailable or missing evidence stays neutral — a route with no breakdown gets no character term rather than a zero. Blocking problems scale the term down with the distance they affect instead of switching it off, so twenty metres of steps no longer wipes it out. Raw scoring controls and diagnostics remain development-only.
 
-The service accepts at most six routes per batch, rejects viewports exceeding 5,000 sections without replacing the current map overlay, uses six bounded workers, and keeps decoded/projected section geometry in a 128 MB cache. See the evidence documentation for request shapes and operational limits.
+The service accepts at most six routes per batch, rejects viewports exceeding 5,000 sections without replacing the current map overlay, uses six bounded workers, and keeps decoded/projected section geometry in a 128 MB cache. Adding rights of way and greenspace roughly doubles the stored sections, so that viewport limit is reached at a lower zoom than before. See the evidence documentation for request shapes and operational limits.
 
 See [Route-use evidence preparation and validation](docs/route-use-evidence.md) for archive origin, licensing, matching rules, endpoints, resource requirements, and the manual validation checklist.
 

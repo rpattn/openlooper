@@ -1,7 +1,7 @@
 import { Crosshair, LocateFixed, Maximize2 } from "lucide-react";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { closestSegment, distanceKm, routeBounds } from "../domain/geometry";
-import { loopSeeds, scaleLoop } from "../domain/loops";
+import { CONTOUR_FRACTIONS, loopSeeds, scaleLoop } from "../domain/loops";
 import type {
   Coordinate,
   RouteAlternative,
@@ -21,17 +21,17 @@ import {
 } from "../evidence/evidence-client";
 import { analyzeRoute, mapEdges } from "../domain/route-analysis";
 import {
-  DEFAULT_LOOP_SCORING_WEIGHTS,
-  hasDisconnectedJump,
   LOOP_LIMITS,
-  repeatedCoverage,
+  rankCandidates,
   repetitionDescription,
   routeSimilarity,
   scoreRoute,
-  surfaceConcernPercentage,
+  scoringWeightsFor,
 } from "../domain/route-scoring";
+import { characterDescription } from "../domain/vocabulary";
 import { RouteMap } from "../map/RouteMap";
 import {
+  distanceContour,
   routePlan as requestRoute,
   traceRoute,
 } from "../routing/valhalla-client";
@@ -75,15 +75,13 @@ function loopLabel(
   result: RouteResult,
   metrics: NonNullable<RouteAlternative["metrics"]>,
 ) {
-  const evidence =
-    result.useEvidence?.status === "available"
-      ? `${Math.round(result.useEvidence.evidencedDistancePct)}% evidenced distance`
-      : "evidenced distance unavailable";
   return [
     `${Math.round(metrics.distanceError * 100)}% target error`,
     repetitionDescription(metrics.repeatedCoverage),
-    `${Math.round(surfaceConcernPercentage(result))}% recorded unpaved/rough concern`,
-    evidence,
+    characterDescription(metrics.character),
+    result.useEvidence?.status === "available"
+      ? `${Math.round(result.useEvidence.evidencedDistancePct)}% evidenced distance`
+      : "evidenced distance unavailable",
   ].join(" · ");
 }
 
@@ -128,11 +126,19 @@ export function App() {
   const [evidenceRanking, setEvidenceRanking] = useState(true);
   const evidenceRankingRef = useRef(true);
   const [scoringWeights, setScoringWeights] = useState<LoopScoringWeights>(
-    DEFAULT_LOOP_SCORING_WEIGHTS,
+    scoringWeightsFor(state.plan.activity),
   );
   const scoringWeightsRef = useRef(scoringWeights);
   const [viewportEvidenceState, setViewportEvidenceState] =
     useState<ViewportEvidenceState>({ loading: false, count: 0 });
+  const activity = state.plan.activity;
+  // What counts as a good route differs by activity, so the weights follow it.
+  // Any development-only override is deliberately dropped on the change.
+  useEffect(() => {
+    const weights = scoringWeightsFor(activity);
+    scoringWeightsRef.current = weights;
+    setScoringWeights(weights);
+  }, [activity]);
   const requestId = useRef(0);
   const controller = useRef<AbortController | undefined>(undefined);
   const evidenceOverlayController = useRef<AbortController | undefined>(
@@ -368,20 +374,33 @@ export function App() {
     const abort = new AbortController();
     controller.current = abort;
     const id = ++requestId.current;
-    dispatch({ type: "routeStart", progress: "Trying 12 loop shapes…" });
-    const seeds = loopSeeds(start, target, current.loopSeed);
+    dispatch({ type: "routeStart", progress: "Measuring how far you can get…" });
     const basePlan = { ...current.plan, mode: "loop" as const };
     try {
+      // One request describes how far the network actually reaches in every
+      // direction, which is what the shaping points are then placed on.
+      const [triangle, diamond] = await Promise.all(
+        [CONTOUR_FRACTIONS.triangle, CONTOUR_FRACTIONS.diamond].map((fraction) =>
+          distanceContour(
+            start,
+            target / fraction,
+            basePlan.activity,
+            basePlan.preferences,
+            abort.signal,
+          ),
+        ),
+      );
+      const seeds = loopSeeds(start, target, current.loopSeed, [], {
+        triangle,
+        diamond,
+      });
+      dispatch({ type: "progress", progress: "Trying 12 loop shapes…" });
       const initial = await pool(
         seeds,
-        LOOP_LIMITS.maxConcurrent,
-        async (seed, index) => {
+        LOOP_LIMITS.seedConcurrency,
+        async (seed) => {
           if (abort.signal.aborted)
             throw new DOMException("Aborted", "AbortError");
-          dispatch({
-            type: "progress",
-            progress: `Trying loop shapes… ${index + 1}/12`,
-          });
           const [result] = await requestRoute(
             { ...basePlan, waypoints: seed.waypoints },
             abort.signal,
@@ -390,46 +409,24 @@ export function App() {
           return { seed, result: result! };
         },
       );
-      let viable = initial
-        .flatMap((item) => (item.status === "fulfilled" ? [item.value] : []))
-        .filter(
-          (item) =>
-            Math.abs(item.result.distanceKm - target) / target <=
-              LOOP_LIMITS.maxDistanceError &&
-            repeatedCoverage(item.result.geometry) <=
-              LOOP_LIMITS.maxRepeatedCoverage &&
-            !hasDisconnectedJump(item.result.geometry, target),
-        );
-      const refinementLimit = target > 20 ? 6 : target > 10 ? 8 : viable.length;
-      viable = viable
-        .sort(
-          (a, b) =>
-            scoreRoute(
-              b.result,
-              target,
-              [],
-              false,
-              scoringWeightsRef.current,
-            ).score -
-            scoreRoute(
-              a.result,
-              target,
-              [],
-              false,
-              scoringWeightsRef.current,
-            ).score,
-        )
-        .slice(0, refinementLimit);
+      const refinementLimit = target > 20 ? 6 : target > 10 ? 8 : seeds.length;
+      const promising = rankCandidates(
+        initial.flatMap((item) =>
+          item.status === "fulfilled" ? [item.value] : [],
+        ),
+        target,
+        basePlan.activity,
+        scoringWeightsRef.current,
+      ).slice(0, refinementLimit);
       dispatch({
         type: "progress",
-        progress: `Refining ${viable.length} promising loops…`,
+        progress: `Refining ${promising.length} promising loops…`,
       });
       const refined = await pool(
-        viable,
-        LOOP_LIMITS.maxConcurrent,
-        async ({ seed, result }) => {
-          if (Math.abs(result.distanceKm - target) / target <= 0.03)
-            return { seed, result };
+        promising,
+        LOOP_LIMITS.refineConcurrency,
+        async ({ seed, result, metrics }) => {
+          if (metrics.distanceError <= 0.03) return { seed, result };
           const factor = Math.max(
             LOOP_LIMITS.refinementMin,
             Math.min(LOOP_LIMITS.refinementMax, target / result.distanceKm),
@@ -443,42 +440,21 @@ export function App() {
           return { seed: adjusted, result: route! };
         },
       );
-      viable = refined
-        .flatMap((item) => (item.status === "fulfilled" ? [item.value] : []))
-        .filter(
-          (item) =>
-            Math.abs(item.result.distanceKm - target) / target <=
-              LOOP_LIMITS.maxDistanceError &&
-            repeatedCoverage(item.result.geometry) <=
-              LOOP_LIMITS.maxRepeatedCoverage &&
-            !hasDisconnectedJump(item.result.geometry, target),
-        );
-      const shortlist = viable
-        .sort(
-          (a, b) =>
-            scoreRoute(
-              b.result,
-              target,
-              [],
-              false,
-              scoringWeightsRef.current,
-            ).score -
-            scoreRoute(
-              a.result,
-              target,
-              [],
-              false,
-              scoringWeightsRef.current,
-            ).score,
-        )
-        .slice(0, 6);
+      const shortlist = rankCandidates(
+        refined.flatMap((item) =>
+          item.status === "fulfilled" ? [item.value] : [],
+        ),
+        target,
+        basePlan.activity,
+        scoringWeightsRef.current,
+      ).slice(0, 6);
       dispatch({
         type: "progress",
         progress: "Checking route surfaces and issues…",
       });
       const attributed = await pool(
         shortlist,
-        LOOP_LIMITS.maxConcurrent,
+        LOOP_LIMITS.traceConcurrency,
         async (item) => ({
           ...item,
           result: await attributeRouteGeometry(
@@ -519,6 +495,7 @@ export function App() {
             item.result,
             target,
             item.result.issues,
+            basePlan.activity,
             evidenceRankingRef.current,
             scoringWeightsRef.current,
           ),
@@ -592,6 +569,7 @@ export function App() {
           alternative.result,
           target,
           alternative.result.issues,
+          current.plan.activity,
           enabled,
           weights,
         );
