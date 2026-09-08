@@ -370,40 +370,64 @@ network-building phase and skips the GPS matching pass, so the real full-build
 peak is somewhat higher — the GPS pass adds an accumulator and eight forked
 workers dirtying shared pages.
 
-### The UK, on a 32 GB node
+### The UK, on a 16 GB node
 
-Use `europe/great-britain` (2.02 GB), not `europe/united-kingdom` (2.10 GB).
-The difference is Northern Ireland, and evidence preparation projects to
-EPSG:27700 — the British National Grid — which does not cover it.
+Use `europe/united-kingdom` (2.10 GB) for routing. Valhalla has no projection
+constraint, so Northern Ireland routes fine; only the evidence region is bound
+to Great Britain by EPSG:27700.
 
-**Routing: yes.** The UK extract is 29.6× the prototype region, so roughly 5.5 GB of tiles
-and about 2 GB of elevation. The tile build is the slow part — hours, and
-`build_admins` on a GB extract is memory-hungry — but it happens once and
-serving afterwards is memory-mapped.
+**Routing, serving: fine.** Tiles are memory-mapped, so a UK graph serves in
+about the same memory as a county one.
 
-**Evidence: no, and not close.** 2.04 GiB × 28.5 is about **58 GiB** for the
-network phase alone, before the GPS pass. You are short by a factor of two to
-three, and the resulting database would be near 10 GB. This is not a tuning
-problem; it needs either a much larger machine or a change to
-`prepare_evidence.py` to spill its per-section state to disk instead of holding
-it in RAM.
+**Routing, building: uncertain.** The tile build is a different workload from
+serving, and 2.1 GB of PBF against a 12 Gi ceiling is not comfortable. Try it —
+and unlike evidence matching, this one is worth giving swap. There is 500 GB of
+disk, a 32 GB swap file costs nothing, and a staged tile build is not the
+pathological random-access workload that would make swapping useless. If it
+still fails, fall back to `england` (1.58 GB) or a group of counties.
 
-So the answer to "the whole UK" on this box is: **route it all, evidence the
-part you actually run in.** That is what the shipped config does — a GB routing
-PBF and a Midlands evidence bbox.
+**Evidence, as the pipeline stands: about 240 MB of PBF**, roughly 3x the
+two-county prototype. That is the 12 Gi Job ceiling against a full-build cost of
+roughly 50x the evidence PBF.
 
-The evidence ceiling here is about **500 MB of PBF**, and it is RAM, not disk:
-a 24 GiB Job budget against a full-build cost of roughly 50× the PBF once the
-GPS pass's accumulator and eight forked workers are added to the measured 29×.
-Scaling `openlooper-valhalla` and `openlooper-evidence` to zero for the duration
-frees a few more GB — both are unusable mid-region-change anyway — which buys
-perhaps another 70 MB of region. Swap does not help: the matching phase is
-millions of random STRtree lookups and would thrash. The default bbox
-(`-3.15,52.05,-0.75,53.55`) covers Staffordshire, Derbyshire, Cheshire,
-Shropshire, the West Midlands, Warwickshire, Worcestershire, Leicestershire and
-Nottinghamshire. The prepare Job prints the extract's size and a projected peak
-before handing over, so widen the bbox, run it, and read the number before
-committing to a multi-hour build.
+### Why not the whole UK
+
+Because `prepare_evidence.py` builds one region in one process, holding an
+STRtree over every highway way, the way geometries, and a per-section evidence
+dict in RAM at once. UK-wide that is on the order of 100 GiB. This is an
+implementation choice made for a 71 MB region on a laptop, not a property of the
+problem.
+
+The problem itself tiles cleanly, and that is worth stating precisely because it
+is what any fix would rely on:
+
+- `section_id` is `f"{way_id}:{section_index}"`, where the index is a
+  deterministic 25 m offset along the way. It does not depend on what else is in
+  the PBF.
+- `osmium extract --strategy complete_ways` keeps a way that crosses a tile
+  boundary **whole** in every tile that touches it, so its length — and
+  therefore its section indices — are identical in each.
+
+Checked, not assumed: cutting two adjacent tiles out of the prototype region
+gave 457 boundary-crossing ways present in both, and all 457 had byte-identical
+node lists.
+
+So section ids are globally stable, and tile databases merge with
+`INSERT OR IGNORE` on `network_section` while `section_evidence`'s existing
+`PRIMARY KEY (section_id, source_id)` collapses the duplicates. A UK-wide
+database is a merge of nine or ten tile builds, each of which fits in 12 Gi.
+
+What it costs is time, not memory. Every tile pass re-streams the whole 21 GB
+compressed archive, and that decompression is single-core and sets the floor —
+roughly 40 minutes a pass before any matching. Ten tiles is 7 hours of
+decompression alone, so budget 12–24 hours. A single pre-filter pass writing the
+UK-relevant members to a smaller intermediate would cut that sharply; there is
+disk for it.
+
+None of this exists yet. Today the pipeline builds one region, and the
+deployment covers that with UK-wide routing and regional evidence — which the
+app already handles: no evidence means unknown, routing still works, and ranking
+stays neutral outside the evidence region.
 
 ### Disk
 

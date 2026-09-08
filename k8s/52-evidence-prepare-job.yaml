@@ -84,15 +84,16 @@ spec:
               # enough to matter, low enough that the Job is not left Pending
               # alongside the three Deployments.
               cpu: "4"
-              memory: 8Gi
+              memory: 4Gi
             # The parent holds an STRtree over every highway way in the region
             # plus a per-section evidence dict, and eight forked workers each
             # dirty the shared geometry pages as they touch refcounts. Measured
-            # at 2.04 GiB for a 71 MB evidence PBF — about 29x the file — so on
-            # a 32 GB node this ceiling puts the evidence region's practical
-            # limit near 500 MB of PBF. The routing region is not bound by this.
+            # at 2.04 GiB for a 71 MB evidence PBF — about 29x the file, and
+            # roughly 50x once the GPS pass is included. On this 16 GB node a
+            # 12 Gi ceiling puts the evidence region near 240 MB of PBF. The
+            # routing region is not bound by this.
             limits:
-              memory: 24Gi
+              memory: 12Gi
       volumes:
         - name: evidence-data
           hostPath:

@@ -47,14 +47,18 @@ data:
   # west,south,east,north. Cut from the routing PBF with `osmium extract`.
   # Leave empty to prepare evidence for the whole routing region — only do that
   # if the routing region is small enough to fit in RAM, which a UK-wide one is
-  # not: it would need roughly 60 GiB and this node has 32 GB.
+  # not: in one process it would need roughly 100 GiB and this node has 16 GB.
+  # See "Why not the whole UK" in docs/deployment.md for what would change that.
   #
-  # This box: peak preparation memory runs about 29x the evidence PBF's size,
-  # so a 24 GiB Job budget puts the ceiling near 500 MB of PBF. Check what a
-  # bbox actually weighs before committing to a multi-hour build — the prepare
-  # Job prints the extract's size before it hands over.
+  # This is a 16 GB node. Peak preparation memory runs about 29x the evidence
+  # PBF for the network phase and roughly 50x for a full build, so a 12 Gi Job
+  # ceiling puts the limit near 240 MB of PBF — about 3x the two-county
+  # prototype, not the whole Midlands.
   #
-  # The default covers the Midlands and the southern Peak: Staffordshire,
-  # Derbyshire, Cheshire, Shropshire, the West Midlands, Warwickshire,
-  # Worcestershire, Leicestershire and Nottinghamshire.
-  evidence-bbox: "-3.15,52.05,-0.75,53.55"
+  # The prepare Job prints the extract's size and a projected peak before it
+  # hands over. Widen this, run that Job, read the number, and only then start
+  # a build that takes most of a day.
+  #
+  # The default covers Staffordshire, Derbyshire and their immediate
+  # neighbours — the southern Peak, Cannock Chase and Charnwood.
+  evidence-bbox: "-2.85,52.35,-1.05,53.45"

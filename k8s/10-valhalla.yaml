@@ -77,11 +77,11 @@ spec:
             # far more, and an OOM kill mid-build throws away hours. Hence a
             # limit sized for the build rather than the steady state.
             #
-            # On a 32 GB node this must not overlap the evidence prepare Job,
-            # which is allowed 24 Gi of its own. Run the two builds one after
-            # the other, never at the same time.
+            # This is a 16 GB node, so 12 Gi is most of it: the build must not
+            # overlap the evidence prepare Job, which is allowed the same. Run
+            # the two one after the other, never at the same time.
             limits:
-              memory: 24Gi
+              memory: 12Gi
       volumes:
         - name: routing-data
           hostPath:
