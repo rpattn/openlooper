@@ -42,6 +42,25 @@ Create the data directories either way:
 sudo mkdir -p /srv/openlooper/{valhalla,evidence,gps}
 ```
 
+**On a distribution with SELinux enforcing** — Fedora, RHEL, CentOS, openSUSE —
+label them so containers may write to them. Without this every Job fails on its
+first write with `Permission denied` even as root, because the pod is refused by
+policy rather than by file permissions:
+
+```bash
+getenforce   # if this says Enforcing, do the next two
+sudo semanage fcontext -a -t container_file_t "/srv/openlooper(/.*)?"
+sudo restorecon -Rv /srv/openlooper
+```
+
+`semanage` comes from `policycoreutils-python-utils`. Doing it this way survives
+a filesystem relabel, and files created underneath inherit the type, which
+`chcon -Rt container_file_t /srv/openlooper` alone would not.
+
+The alternative — `seLinuxOptions` with `spc_t` in the pod spec — would let these
+containers reach far more of the host than their own data, so relabel the
+directories instead.
+
 Then pick one:
 
 - **Build the region on the node.** The right choice for anything wider than the
@@ -583,6 +602,7 @@ evidence — that split exists only in the cluster manifests.
 | Symptom | Cause |
 | --- | --- |
 | A prepare Job shows `Init:Error` | The failure is in an init container, so plain `kubectl logs` will not show it. Name the container: `kubectl -n openlooper logs <pod> -c download`, or `--all-containers`. |
+| `Permission denied` writing under `/routing`, `/evidence` or `/gps`, as root | SELinux. Check `getenforce`; a trailing `.` on `ls -ld` and `seclabel` in `findmnt` are the other tells. Relabel as in *Two ways in*. |
 | `openlooper-evidence` crash-loops with "Evidence database is stale" | The PBF and database disagree. Expected mid-region-change; finish the runbook. |
 | `openlooper-evidence` crash-loops on "must both be mounted read-only" | `route-use-evidence.sqlite` or `evidence-region.osm.pbf` is missing from `/srv/openlooper/evidence`. |
 | `/api/*` returns 429 | The per-client rate limit. Raise `API_RATE`/`API_BURST` on `openlooper-web`, or find out who is hitting it in that pod's logs. |
