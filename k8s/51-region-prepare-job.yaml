@@ -1,13 +1,17 @@
-# Downloads the county extracts named in the openlooper-region ConfigMap and
-# merges them into /srv/openlooper/valhalla/local-region.osm.pbf.
+# Produces the two PBFs everything else derives from:
 #
-# Run it, then follow the region-change runbook in docs/deployment.md: the
-# routing graph has to be rebuilt from the new PBF and the evidence database
-# rebuilt against it before either service will serve the wider area.
+#   /srv/openlooper/valhalla/local-region.osm.pbf   what Valhalla routes on
+#   /srv/openlooper/evidence/evidence-region.osm.pbf what evidence is built from
+#
+# The second is cut out of the first, so both are the same OSM vintage.
 #
 #   kubectl -n openlooper delete job openlooper-region-prepare --ignore-not-found
 #   kubectl -n openlooper apply -f k8s/51-region-prepare-job.yaml
 #   kubectl -n openlooper logs -f job/openlooper-region-prepare
+#
+# Then follow the region-change runbook in docs/deployment.md: the graph has to
+# be rebuilt and the evidence database re-prepared before either serves the new
+# area.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -31,47 +35,83 @@ spec:
           command: ["/bin/sh", "-eu", "-c"]
           args:
             - |
-              base="$(cat /config/base-url)"
               mkdir -p /routing/sources
-              while read -r county; do
-                [ -n "$county" ] || continue
-                out="/routing/sources/${county}-latest.osm.pbf"
-                echo "==> ${base}/${county}-latest.osm.pbf"
+              fetch() {
+                echo "==> $1"
                 # --continue-at resumes a partial file; Geofabrik supports
                 # ranges, so an interrupted run does not start over.
                 curl --fail --location --retry 5 --connect-timeout 20 \
-                     --continue-at - --remote-time --output "$out" \
-                     "${base}/${county}-latest.osm.pbf"
-                ls -l "$out"
-              done < /config/counties
+                     --continue-at - --remote-time --output "$2" "$1"
+                ls -l "$2"
+              }
+              url="$(cat /config/routing-url)"
+              if [ -n "$url" ]; then
+                fetch "$url" /routing/sources/routing-source.osm.pbf
+              else
+                base="$(cat /config/base-url)"
+                while read -r county; do
+                  [ -n "$county" ] || continue
+                  fetch "${base}/${county}-latest.osm.pbf" \
+                        "/routing/sources/${county}-latest.osm.pbf"
+                done < /config/counties
+              fi
           volumeMounts:
             - name: routing-data
               mountPath: /routing
             - name: region
               mountPath: /config
       containers:
-        - name: merge
+        - name: extract
           image: iboates/osmium:1.18.0
           # The image's entrypoint is osmium itself, so the shell has to be
-          # named explicitly to build the input list from the ConfigMap.
+          # named explicitly to branch on the ConfigMap.
           command: ["/bin/sh", "-eu", "-c"]
           args:
             - |
-              set --
-              while read -r county; do
-                [ -n "$county" ] || continue
-                osmium fileinfo "/routing/sources/${county}-latest.osm.pbf" > /dev/null
-                set -- "$@" "/routing/sources/${county}-latest.osm.pbf"
-              done < /config/counties
-              echo "Merging $# extract(s)…"
-              osmium merge --overwrite "$@" -o /routing/local-region.osm.pbf
-              ls -l /routing/local-region.osm.pbf
-              # Both services are pinned to this checksum; the evidence service
-              # refuses to start unless its database records the same value.
-              sha256sum /routing/local-region.osm.pbf
+              url="$(cat /config/routing-url)"
+              if [ -n "$url" ]; then
+                # One extract, used as-is. `cat` rather than `mv` so a re-run
+                # does not consume the resumable download.
+                osmium fileinfo /routing/sources/routing-source.osm.pbf > /dev/null
+                cat /routing/sources/routing-source.osm.pbf > /routing/local-region.osm.pbf
+              else
+                set --
+                while read -r county; do
+                  [ -n "$county" ] || continue
+                  osmium fileinfo "/routing/sources/${county}-latest.osm.pbf" > /dev/null
+                  set -- "$@" "/routing/sources/${county}-latest.osm.pbf"
+                done < /config/counties
+                echo "Merging $# extract(s)…"
+                osmium merge --overwrite "$@" -o /routing/local-region.osm.pbf
+              fi
+
+              bbox="$(cat /config/evidence-bbox)"
+              if [ -n "$bbox" ]; then
+                echo "Cutting the evidence region ($bbox) out of the routing PBF…"
+                # complete_ways keeps every way that crosses the boundary whole,
+                # so sections are not silently truncated at the edge.
+                osmium extract --overwrite --bbox "$bbox" --strategy complete_ways \
+                  /routing/local-region.osm.pbf -o /evidence/evidence-region.osm.pbf
+              else
+                echo "No evidence bbox set: evidence covers the whole routing region."
+                cat /routing/local-region.osm.pbf > /evidence/evidence-region.osm.pbf
+              fi
+
+              echo
+              echo "Routing PBF   $(ls -l /routing/local-region.osm.pbf | awk '{print $5}') bytes"
+              echo "Evidence PBF  $(ls -l /evidence/evidence-region.osm.pbf | awk '{print $5}') bytes"
+              echo
+              # Preparation memory runs about 29x the evidence PBF. Well past
+              # the Job's 24 GiB ceiling is worth knowing before starting a
+              # multi-hour build that ends in an OOM kill.
+              awk -v b="$(ls -l /evidence/evidence-region.osm.pbf | awk '{print $5}')" \
+                'BEGIN { printf "Projected evidence preparation peak: %.1f GiB\n", b*29/1073741824 }'
+              sha256sum /routing/local-region.osm.pbf /evidence/evidence-region.osm.pbf
           volumeMounts:
             - name: routing-data
               mountPath: /routing
+            - name: evidence-data
+              mountPath: /evidence
             - name: region
               mountPath: /config
           resources:
@@ -84,6 +124,10 @@ spec:
         - name: routing-data
           hostPath:
             path: /srv/openlooper/valhalla
+            type: Directory
+        - name: evidence-data
+          hostPath:
+            path: /srv/openlooper/evidence
             type: Directory
         - name: region
           configMap:

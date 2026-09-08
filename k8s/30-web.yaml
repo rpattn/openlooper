@@ -35,6 +35,24 @@ spec:
             #   kubectl -n kube-system get svc kube-dns
             - name: DNS_RESOLVER
               value: 10.43.0.10
+            # Per-client limits on /api/* only; static files are never limited.
+            # Keyed on CF-Connecting-IP, because behind the tunnel every request
+            # arrives from the cloudflared pod and $remote_addr is one address
+            # for the whole internet.
+            #
+            # The burst is what makes this safe to turn on: one "Find loops"
+            # click is a contour measurement, twelve seeds in a wave, then up to
+            # eight refinements. The rate is what bounds sustained abuse.
+            # Tune without a rebuild:
+            #   kubectl -n openlooper set env deploy/openlooper-web API_RATE=10r/s
+            - name: API_RATE
+              value: 15r/s
+            - name: API_BURST
+              value: "60"
+            # Valhalla serves on four threads; this is the cap that actually
+            # protects it from one client opening everything at once.
+            - name: API_CONCURRENCY
+              value: "32"
           readinessProbe:
             httpGet:
               path: /healthz

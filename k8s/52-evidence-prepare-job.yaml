@@ -1,5 +1,6 @@
-# Rebuilds the route-use evidence database against the current
-# /srv/openlooper/valhalla/local-region.osm.pbf. This is the long one: it
+# Rebuilds the route-use evidence database against
+# /srv/openlooper/evidence/evidence-region.osm.pbf, the sub-region that
+# 51-region-prepare-job.yaml cut out of the routing PBF. This is the long one: it
 # streams the whole 21 GB compressed 2013 OSM GPS archive past the regional
 # network, which took about 45 minutes for the two-county prototype region and
 # scales with both the archive's fixed single-core decompression floor and the
@@ -8,6 +9,9 @@
 #   kubectl -n openlooper delete job openlooper-evidence-prepare --ignore-not-found
 #   kubectl -n openlooper apply -f k8s/52-evidence-prepare-job.yaml
 #   kubectl -n openlooper logs -f job/openlooper-evidence-prepare
+#
+# The first run downloads and md5-checks the 21 GB GPS archive into
+# /srv/openlooper/gps. Leave it there: rebuilds then skip hours of transfer.
 #
 # It writes route-use-evidence.sqlite.next rather than replacing the live file:
 # the running service holds the current database open, and swapping it under a
@@ -60,7 +64,7 @@ spec:
           args:
             - python
             - /app/prepare_evidence.py
-            - --pbf=/routing/local-region.osm.pbf
+            - --pbf=/evidence/evidence-region.osm.pbf
             - --gps-archive=/gps/gpx-planet-2013-04-09.tar.xz
             - --output=/evidence/route-use-evidence.sqlite.next
             - --report=/evidence/build-report.json.next
@@ -68,9 +72,6 @@ spec:
             # the floor on the whole build, so more than eight buys nothing.
             - --workers=8
           volumeMounts:
-            - name: routing-data
-              mountPath: /routing
-              readOnly: true
             - name: evidence-data
               mountPath: /evidence
             - name: gps-archive
@@ -86,16 +87,13 @@ spec:
               memory: 8Gi
             # The parent holds an STRtree over every highway way in the region
             # plus a per-section evidence dict, and eight forked workers each
-            # dirty the shared geometry pages as they touch refcounts. Raise
-            # this before widening the region much past the ring in
-            # 50-region-config.yaml.
+            # dirty the shared geometry pages as they touch refcounts. Measured
+            # at 2.04 GiB for a 71 MB evidence PBF — about 29x the file — so on
+            # a 32 GB node this ceiling puts the evidence region's practical
+            # limit near 500 MB of PBF. The routing region is not bound by this.
             limits:
               memory: 24Gi
       volumes:
-        - name: routing-data
-          hostPath:
-            path: /srv/openlooper/valhalla
-            type: Directory
         - name: evidence-data
           hostPath:
             path: /srv/openlooper/evidence

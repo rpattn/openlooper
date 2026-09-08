@@ -33,7 +33,10 @@ FROM nginx:1.27.3-alpine
 # Non-privileged port so the container needs no added capabilities.
 ENV VALHALLA_UPSTREAM=openlooper-valhalla:8002 \
     EVIDENCE_UPSTREAM=openlooper-evidence:8003 \
-    DNS_RESOLVER=10.43.0.10
+    DNS_RESOLVER=10.43.0.10 \
+    API_RATE=15r/s \
+    API_BURST=60 \
+    API_CONCURRENCY=32
 COPY docker/web/nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY docker/web/proxy.conf /etc/nginx/openlooper-proxy.conf
 COPY --from=build /repo/apps/openlooper-native/dist /usr/share/nginx/html

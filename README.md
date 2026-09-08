@@ -122,6 +122,6 @@ This repository has no backend, authentication, sharing, tracking, analytics, or
 
 ## Deploying it
 
-The prototype can run on a single-node k3s homelab behind a Cloudflare tunnel, with the Expo web export, Valhalla, and the evidence service published on one hostname. Region data stays on the node rather than in any image, and the node can rebuild a wider region itself. See [Deploying OpenLooper to a single-node k3s homelab](docs/deployment.md); manifests are in `k8s/`.
+The prototype can run on a single-node k3s homelab behind a Cloudflare tunnel, with the Expo web export, Valhalla, and the evidence service published on one hostname and per-client rate limits on the API paths. Region data stays on the node rather than in any image, and the node can rebuild a wider region itself. Routing and evidence cover separate areas there: routing tiles are memory-mapped and scale, while evidence preparation is bounded by RAM, so the deployed evidence region is a sub-region cut out of the routing one. See [Deploying OpenLooper to a single-node k3s homelab](docs/deployment.md); manifests are in `k8s/`.
 
 This is still personal-testing deployment, not production operation: there is no authentication in front of either service, no backups, and no availability guarantee.

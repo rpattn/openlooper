@@ -1,7 +1,10 @@
-# The evidence service refuses to start unless the mounted PBF's SHA-256 matches
-# the checksum recorded when the database was built, so the database and the
-# routing directory always have to be swapped together. A CrashLoopBackOff here
-# after a region change is that check firing, not a broken image.
+# The evidence service refuses to start unless the SHA-256 of the PBF mounted
+# beside its database matches the checksum recorded when that database was
+# built. That pair is evidence-region.osm.pbf and route-use-evidence.sqlite, both
+# in /srv/openlooper/evidence, and they always move together. Nothing here
+# touches the routing PBF: the evidence region is a sub-region cut out of it, so
+# the two can and usually do cover different areas. A CrashLoopBackOff after a
+# region change is that check firing, not a broken image.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -30,15 +33,12 @@ spec:
             - name: EVIDENCE_DATABASE
               value: /evidence/route-use-evidence.sqlite
             - name: OSM_PBF
-              value: /data/local-region.osm.pbf
+              value: /evidence/evidence-region.osm.pbf
             - name: EVIDENCE_PORT
               value: "8003"
           volumeMounts:
             - name: evidence-data
               mountPath: /evidence
-              readOnly: true
-            - name: routing-data
-              mountPath: /data
               readOnly: true
           # Startup hashes the whole PBF before it listens, so allow for that
           # plus the page cache being cold after a node reboot.
@@ -65,10 +65,6 @@ spec:
         - name: evidence-data
           hostPath:
             path: /srv/openlooper/evidence
-            type: Directory
-        - name: routing-data
-          hostPath:
-            path: /srv/openlooper/valhalla
             type: Directory
 ---
 apiVersion: v1

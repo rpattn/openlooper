@@ -8,15 +8,37 @@
 # to boot whenever it is scheduled before valhalla or evidence have Endpoints.
 resolver ${DNS_RESOLVER} valid=10s ipv6=off;
 
-map $http_upgrade $connection_upgrade {
-    default upgrade;
-    ''      close;
+# Behind the tunnel every connection arrives from the cloudflared pod, so
+# $remote_addr is one address for the whole internet and useless as a limit key.
+# Cloudflare sets CF-Connecting-IP; fall back to $remote_addr for port-forwards
+# and in-cluster checks, where there is no header to trust.
+map $http_cf_connecting_ip $client_ip {
+    ''      $remote_addr;
+    default $http_cf_connecting_ip;
 }
+
+log_format openlooper '$client_ip "$request" $status $body_bytes_sent '
+                      'rt=$request_time ua="$http_user_agent"';
+
+# The API is the only part worth limiting: static files are small, cached at the
+# edge, and served from memory, while one /api/valhalla/route can occupy a
+# routing thread for seconds.
+#
+# Loop generation legitimately bursts — a contour measurement, twelve seeds in
+# one wave, then up to eight refinements — so a per-second rate alone would
+# throttle the feature this app exists for. The burst absorbs that; the rate
+# bounds what anyone can sustain.
+limit_req_zone $client_ip zone=api:10m rate=${API_RATE};
+# The cap that actually protects Valhalla, which serves on four threads.
+limit_conn_zone $client_ip zone=api_conn:10m;
+limit_req_status 429;
+limit_conn_status 429;
 
 server {
     listen 8080;
     server_name _;
     root /usr/share/nginx/html;
+    access_log /var/log/nginx/access.log openlooper;
 
     # Route generation posts a batch of up to six routes; the evidence service
     # itself refuses bodies over 10 MB, so this only has to clear that.
@@ -37,6 +59,8 @@ server {
     }
 
     location /api/valhalla/ {
+        limit_req zone=api burst=${API_BURST} nodelay;
+        limit_conn api_conn ${API_CONCURRENCY};
         set $valhalla_upstream ${VALHALLA_UPSTREAM};
         rewrite ^/api/valhalla/(.*)$ /$1 break;
         proxy_pass http://$valhalla_upstream;
@@ -44,6 +68,8 @@ server {
     }
 
     location /api/evidence/ {
+        limit_req zone=api burst=${API_BURST} nodelay;
+        limit_conn api_conn ${API_CONCURRENCY};
         set $evidence_upstream ${EVIDENCE_UPSTREAM};
         rewrite ^/api/evidence/(.*)$ /$1 break;
         proxy_pass http://$evidence_upstream;

@@ -1,26 +1,55 @@
-# The counties merged into local-region.osm.pbf. Edit this list, apply it, then
-# re-run both prepare Jobs — the routing graph and the evidence database are
-# both keyed to the merged PBF's SHA-256 and have to move together.
+# Two regions, not one.
+#
+# Valhalla and the evidence service have completely different cost profiles.
+# Routing tiles are built once and then memory-mapped, so a graph can cover far
+# more ground than a 32 GB box could ever build evidence for: evidence
+# preparation holds an STRtree over every highway way plus a per-section dict in
+# RAM, and that measured 2.04 GiB for a 71 MB regional PBF.
+#
+# So routing gets one PBF and evidence gets a sub-region cut out of it. The
+# evidence service only ever checks that the PBF mounted beside its database is
+# the one the database was built from — nothing requires that to be the same
+# file Valhalla routes on. Cutting the evidence region out of the routing
+# download with `osmium extract` keeps both at the same OSM vintage, so way IDs
+# and geometry agree wherever they overlap. Outside the evidence region there is
+# simply no evidence, which is already what the app means by unknown.
 #
 # Evidence preparation projects to EPSG:27700, the British National Grid, so the
-# region must stay inside Great Britain.
+# evidence region must stay inside Great Britain. `europe/great-britain` is the
+# right routing extract for that reason too: `europe/united-kingdom` adds
+# Northern Ireland, which 27700 does not cover.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: openlooper-region
   namespace: openlooper
 data:
-  # Geofabrik England subregion slugs, one per line. The current prototype
-  # region is staffordshire + derbyshire alone (71 MB merged); the list below
-  # is the contiguous ring around it, about 250 MB merged.
+  # ---- Routing region ------------------------------------------------------
+  # A single Geofabrik extract, used as-is. Leave empty to merge the county
+  # list below instead.
+  #
+  #   great-britain      2.02 GB   ~5.3 GB of tiles, hours to build
+  #   england            1.58 GB
+  #   (empty)            merge `counties`
+  routing-url: https://download.geofabrik.de/europe/great-britain-latest.osm.pbf
+
+  # Used only when routing-url is empty. Geofabrik splits England by county.
   counties: |
     staffordshire
     derbyshire
-    cheshire
-    shropshire
-    west-midlands
-    warwickshire
-    worcestershire
-    leicestershire
-    nottinghamshire
   base-url: https://download.geofabrik.de/europe/united-kingdom/england
+
+  # ---- Evidence sub-region -------------------------------------------------
+  # west,south,east,north. Cut from the routing PBF with `osmium extract`.
+  # Leave empty to prepare evidence for the whole routing region — only do that
+  # if the routing region is small enough to fit in RAM.
+  #
+  # This box: peak preparation memory runs about 29x the evidence PBF's size,
+  # so a 24 GiB Job budget puts the ceiling near 500 MB of PBF. Check what a
+  # bbox actually weighs before committing to a multi-hour build — the prepare
+  # Job prints the extract's size before it hands over.
+  #
+  # The default covers the Midlands and the southern Peak: Staffordshire,
+  # Derbyshire, Cheshire, Shropshire, the West Midlands, Warwickshire,
+  # Worcestershire, Leicestershire and Nottinghamshire.
+  evidence-bbox: "-3.15,52.05,-0.75,53.55"
