@@ -38,10 +38,21 @@ spec:
               mkdir -p /routing/sources
               fetch() {
                 echo "==> $1"
-                # --continue-at resumes a partial file; Geofabrik supports
-                # ranges, so an interrupted run does not start over.
-                curl --fail --location --retry 5 --connect-timeout 20 \
-                     --continue-at - --remote-time --output "$2" "$1"
+                # Resuming an already-complete file asks for a range past its
+                # end, which Geofabrik answers 416 and --fail turns into a
+                # failed Job. Widening the evidence region re-runs this Job, so
+                # compare sizes first and only download when they differ.
+                remote=$(curl --fail --silent --location --head "$1" \
+                         | tr -d '\r' | awk 'tolower($1)=="content-length:"{v=$2} END{print v+0}')
+                have=$([ -f "$2" ] && wc -c < "$2" || echo 0)
+                if [ "$remote" -gt 0 ] && [ "$have" -eq "$remote" ]; then
+                  echo "    already complete ($have bytes); delete it to refresh"
+                else
+                  # --continue-at resumes a partial file; Geofabrik supports
+                  # ranges, so an interrupted download does not start over.
+                  curl --fail --location --retry 5 --connect-timeout 20 \
+                       --continue-at - --remote-time --output "$2" "$1"
+                fi
                 ls -l "$2"
               }
               url="$(cat /config/routing-url)"
