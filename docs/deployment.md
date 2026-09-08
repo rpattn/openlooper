@@ -106,8 +106,14 @@ The evidence Jobs run `rpattn/openlooper-evidence`, so that image has to exist
 on Docker Hub first — push `production` and let the workflow finish before
 step 4.
 
+Widen in one direction only. The evidence region is cut from the routing PBF,
+so building UK-wide routing first means widening evidence later is a config
+change and one Job — no second Valhalla build. Doing it the other way round
+throws the long build away. So: UK routing from the start, evidence starting at
+the Midlands, and step 4 repeated with a wider bbox when you want more.
+
 1. **Namespace and region.** Check `k8s/50-region-config.yaml` first: it ships
-   with UK-wide routing and a Midlands evidence bbox.
+   with UK-wide routing and a Midlands evidence bbox at a 2x2 grid.
 
    ```bash
    kubectl apply -f k8s/00-namespace.yaml -f k8s/50-region-config.yaml
@@ -135,6 +141,11 @@ step 4.
 
    Wait for it to finish before starting step 4. Confirm with
    `kubectl -n openlooper get pods` showing `1/1 Running`.
+
+   This is the step most likely to fail on 16 GB. If it is OOM-killed, add swap
+   before retrying — a staged tile build tolerates it — and if it still fails,
+   set `routing-url` to `england` or empty it to merge the county list, then
+   re-run step 2.
 
 4. **Evidence database** — the second long build. Downloads and md5-checks the
    21 GB GPS archive, prefilters it once, cuts the region into tiles, builds

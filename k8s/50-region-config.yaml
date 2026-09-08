@@ -72,8 +72,8 @@ data:
   # Columns and rows over evidence-bbox. Cut them small enough that the largest
   # tile's projected peak clears the Job's 12 Gi limit; the tiling step prints
   # a projection per tile before anything long starts.
-  tile-cols: "1"
-  tile-rows: "1"
+  tile-cols: "2"
+  tile-rows: "2"
 
   # Degrees of context extracted beyond each cell. Tiles overlap by this much,
   # and prepare_evidence.py then writes only the ways whose midpoint falls in

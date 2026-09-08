@@ -21,6 +21,21 @@ set -eu
 PBF="$1"; OUT="$2"; BBOX="$3"; COLS="$4"; ROWS="$5"; MARGIN="$6"
 
 mkdir -p "$OUT"
+
+# Tiles are named by index and both this script and build_tiles.sh keep finished
+# work so a failed run resumes. That is only safe while the grid is unchanged:
+# after re-tiling, tile-0 means a different piece of the world. Changing any
+# parameter therefore discards everything derived from the old one.
+GRID_ID="$BBOX|$COLS|$ROWS|$MARGIN"
+if [ -f "$OUT/grid.id" ] && [ "$(cat "$OUT/grid.id")" != "$GRID_ID" ]; then
+  echo "Grid changed:"
+  echo "  was $(cat "$OUT/grid.id")"
+  echo "  now $GRID_ID"
+  echo "Discarding tiles built for the previous grid."
+  rm -f "$OUT"/tile-*.osm.pbf "$OUT"/tile-*.sqlite "$OUT"/tile-*.json "$OUT"/manifest.tsv
+fi
+printf '%s' "$GRID_ID" > "$OUT/grid.id"
+
 echo "$BBOX" | tr ',' ' ' | while read -r W S E N; do
   awk -v w="$W" -v s="$S" -v e="$E" -v n="$N" -v cols="$COLS" -v rows="$ROWS" -v m="$MARGIN" '
     BEGIN {
