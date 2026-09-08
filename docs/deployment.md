@@ -328,9 +328,13 @@ images and pushes `latest` and a short-SHA tag to Docker Hub.
 git push origin master:production
 ```
 
-This repository currently has no remote configured — `git remote add origin …`
-first. The workflow needs two repository secrets: `DOCKERHUB_USERNAME` and
-`DOCKERHUB_TOKEN` (Docker Hub → Account settings → Personal access tokens).
+The workflow needs one repository secret, `DOCKERHUB_TOKEN` — a Read & Write
+access token from Docker Hub → Account settings → Personal access tokens. It has
+to be a *repository* secret under Settings → Secrets and variables → Actions;
+an environment secret or a variable resolves to empty and the run fails with
+`Error: Password required`. The account name is not a secret and is set as
+`DOCKERHUB_NAMESPACE` in the workflow, because it is already in the manifests
+and keeping it secret masks every image name in the logs.
 
 Both Deployments use `imagePullPolicy: Always` on `:latest`, so rolling out is:
 

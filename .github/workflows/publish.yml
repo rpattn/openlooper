@@ -5,15 +5,25 @@
 # Deployment stays manual. After a green run, on the k3s node:
 #   kubectl -n openlooper rollout restart deploy/openlooper-web deploy/openlooper-evidence
 #
-# Repository secrets required:
-#   DOCKERHUB_USERNAME  Docker Hub account name
-#   DOCKERHUB_TOKEN     an access token from Docker Hub > Account settings > Personal access tokens
+# One repository secret is required:
+#
+#   DOCKERHUB_TOKEN   Docker Hub > Account settings > Personal access tokens,
+#                     with Read & Write scope. It must be a *repository* secret
+#                     (Settings > Secrets and variables > Actions), not a
+#                     variable and not an environment secret, or it resolves to
+#                     empty and login fails with "Password required".
+#
+# The account name is not a secret: it is already in the k8s manifests, and
+# keeping it in one masks every image name in the logs as ***.
 name: publish
 
 on:
   push:
     branches: [production]
   workflow_dispatch:
+
+env:
+  DOCKERHUB_NAMESPACE: rpattn
 
 jobs:
   images:
@@ -34,17 +44,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Fail here with a readable message rather than inside login-action,
+      # which only says "Password required".
+      - name: Check the Docker Hub token is present
+        run: |
+          if [ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+            echo "::error::DOCKERHUB_TOKEN is not set. Add it under Settings >" \
+                 "Secrets and variables > Actions > New repository secret."
+            exit 1
+          fi
+
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          username: ${{ env.DOCKERHUB_NAMESPACE }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.name }}
+          images: ${{ env.DOCKERHUB_NAMESPACE }}/${{ matrix.name }}
           tags: |
             type=raw,value=latest
             type=sha,format=short
