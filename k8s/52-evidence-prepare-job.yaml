@@ -188,3 +188,8 @@ spec:
         - name: tile-script
           configMap:
             name: openlooper-tile-script
+        # The prefilter reads evidence-bbox from here; the tile step takes the
+        # same values as env vars instead.
+        - name: region
+          configMap:
+            name: openlooper-region
