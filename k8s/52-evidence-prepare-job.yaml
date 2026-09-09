@@ -59,14 +59,28 @@ spec:
               archive=/gps/gpx-planet-2013-04-09.tar.xz
               url=https://planet.openstreetmap.org/gps/gpx-planet-2013-04-09.tar.xz
               mkdir -p /gps
+              # The marker holds the verified md5, so it is non-empty and -s
+              # actually tells us something. It used to be written with touch,
+              # which creates an empty file: -s was never true and every run
+              # re-hashed 21 GB for nothing.
               if [ -s "$archive.verified" ]; then
-                echo "Archive already downloaded and verified."
+                echo "Archive already downloaded and verified ($(cat "$archive.verified"))."
                 exit 0
               fi
-              # Roughly 21 GB. --continue-at resumes, so re-running this Job
-              # after an interruption costs only the remainder.
-              curl --fail --location --retry 5 --connect-timeout 20 \
-                   --continue-at - --output "$archive" "$url"
+              # Roughly 21 GB. --continue-at resumes a partial download; unlike
+              # the Geofabrik extracts this archive is a fixed 2013 file that
+              # never changes, so resuming can never splice two versions. Skip
+              # the request entirely when the file is already the right size,
+              # because asking for a range past the end is an error.
+              remote=$(curl --fail --silent --show-error --location --head "$url" \
+                       | tr -d '\r' | awk 'tolower($1)=="content-length:"{v=$2} END{print v+0}' || echo 0)
+              have=$([ -f "$archive" ] && wc -c < "$archive" || echo 0)
+              if [ "$remote" -gt 0 ] && [ "$have" -eq "$remote" ]; then
+                echo "Archive already complete ($have bytes); verifying it."
+              else
+                curl --fail --location --retry 5 --connect-timeout 20 \
+                     --continue-at - --output "$archive" "$url"
+              fi
               curl --fail --location --retry 5 --output "$archive.md5" "$url.md5"
               # Hours of matching against a corrupt archive would be wasted, and
               # the failure would look like thin evidence rather than a bad
@@ -76,7 +90,7 @@ spec:
               echo "expected $expected"
               echo "actual   $actual"
               [ "$expected" = "$actual" ]
-              touch "$archive.verified"
+              printf '%s' "$actual" > "$archive.verified"
           volumeMounts:
             - name: gps-archive
               mountPath: /gps
