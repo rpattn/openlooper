@@ -1,8 +1,10 @@
-# Optional: only apply this if you want a tunnel dedicated to OpenLooper. If a
-# cloudflared already runs on the node or elsewhere in the cluster, skip this
-# file and add a public hostname to that tunnel pointing at
-#   http://openlooper-web.openlooper.svc.cluster.local:80
-# (in-cluster), or expose openlooper-web as a NodePort and point at the node.
+# Optional, and usually not what you want. If the cluster already runs a
+# cloudflared, skip this file entirely and use k8s/35-ingress.yaml instead:
+# add a public hostname to the existing tunnel and let it reach the app through
+# the ingress controller, the same way every other host on the cluster works.
+#
+# This file is for a cluster with no tunnel of its own. It points a dedicated
+# cloudflared straight at the Service, bypassing any ingress.
 #
 # Create the token secret first, from Zero Trust > Networks > Tunnels:
 #   kubectl -n openlooper create secret generic cloudflared-token \

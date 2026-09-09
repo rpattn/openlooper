@@ -268,12 +268,31 @@ Deployment builds its own tiles when it finds none, so applying
 `k8s/10-valhalla.yaml` and watching its logs is less work than driving
 `valhalla_build_tiles` yourself.
 
-## Cloudflare tunnel
+## Publishing it
 
-If you already run cloudflared, skip `k8s/40-cloudflared.yaml` and add a public
-hostname to that tunnel pointing at
-`http://openlooper-web.openlooper.svc.cluster.local:80` (in-cluster) or at a
-NodePort you expose. Otherwise:
+**If the cluster already runs ingress-nginx and a cloudflared** — the usual case
+— apply `k8s/35-ingress.yaml` and add the hostname to the existing tunnel like
+any other host. Nothing else is needed, and `k8s/40-cloudflared.yaml` should be
+skipped.
+
+```bash
+kubectl apply -f k8s/35-ingress.yaml
+kubectl -n openlooper get ingress
+```
+
+Four ingress-nginx defaults would break this app quietly, so the manifest
+overrides them: `proxy-body-size` (1m by default, against evidence batches up to
+10 MB), `proxy-read-timeout` and `proxy-send-timeout` (60s by default, against
+the 95s a loop-generation wave is allowed), and `proxy-buffering` (on by
+default, which holds large GeoJSON viewport responses back). `ssl-redirect` is
+off because Cloudflare terminates TLS and forwards HTTP.
+
+Rate limiting stays inside `openlooper-web` rather than moving to the ingress:
+it keys on `CF-Connecting-IP`, which survives both hops, and keeping it in the
+image means a `port-forward` is limited the same way a tunnel is.
+
+**If there is no tunnel on the cluster**, `k8s/40-cloudflared.yaml` runs one
+dedicated to OpenLooper, pointing straight at the Service:
 
 1. Zero Trust → Networks → Tunnels → create a tunnel, copy the connector token.
 2. `kubectl -n openlooper create secret generic cloudflared-token --from-literal=token='<token>'`

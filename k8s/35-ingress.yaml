@@ -1,0 +1,54 @@
+# Publishes the web front end on an existing ingress-nginx, matching the pattern
+# the other services on this cluster use. If you route through a cloudflared
+# that already points at the ingress controller, this is all that is needed and
+# k8s/40-cloudflared.yaml should be skipped.
+#
+# Add openlooper.rpattn.co.uk as a public hostname on the tunnel exactly as the
+# other hosts are, so Cloudflare terminates TLS and forwards plain HTTP here.
+# The TLS matters beyond privacy: the browser geolocation API refuses to run
+# outside a secure context, so "use my location" does nothing over plain HTTP.
+#
+# Everything reaches one host on purpose. Neither Valhalla nor the evidence
+# service answers CORS preflight requests, so the page and both APIs have to
+# share an origin; openlooper-web's own nginx splits /api/valhalla and
+# /api/evidence back out behind this.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: openlooper
+  namespace: openlooper
+  annotations:
+    # Cloudflare terminates TLS and forwards HTTP, as with the other hosts here.
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+
+    # The default is 1m. The evidence service accepts route batches up to 10 MB
+    # and openlooper-web allows 12m, so without this a large batch fails at the
+    # ingress with 413 before it ever reaches the app.
+    nginx.ingress.kubernetes.io/proxy-body-size: "12m"
+
+    # The default read timeout is 60s. One "Find loops" click fans a wave of
+    # Valhalla requests; openlooper-web waits 95s, chosen to fail just inside
+    # Cloudflare's own 100s origin timeout. Matching them here keeps a slow
+    # route a 504 from the app rather than a truncated response from the
+    # ingress at 60s.
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "95"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "95"
+
+    # Evidence viewport responses are large GeoJSON bodies. Streaming them
+    # through rather than buffering to disk first matches what openlooper-web
+    # already does and gets the map drawing sooner.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: openlooper.rpattn.co.uk
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: openlooper-web
+                port:
+                  number: 80
