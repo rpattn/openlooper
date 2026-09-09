@@ -821,6 +821,15 @@ def main() -> None:
         help="Parse every archive member instead of only those whose bytes could hold an in-region coordinate.",
     )
     parser.add_argument(
+        "--allow-empty",
+        action="store_true",
+        help=(
+            "Exit cleanly, writing nothing, when the PBF holds no highways."
+            " A grid over a coastal region has cells that are entirely sea, and"
+            " those are a normal outcome of tiling rather than a failed build."
+        ),
+    )
+    parser.add_argument(
         "--own-bbox",
         help=(
             "west,south,east,north of the cell this tile is responsible for."
@@ -851,6 +860,11 @@ def main() -> None:
     handler.apply_file(str(args.pbf), locations=True, idx="flex_mem")
     ways = handler.ways
     if not ways:
+        if args.allow_empty:
+            # Before the GPS pass, so an empty cell costs one PBF read rather
+            # than a whole stream of the archive.
+            print("No highways in this extract; nothing to build.", flush=True)
+            return
         raise SystemExit("The regional PBF contains no usable highway geometries.")
     print(f"  {len(ways):,} highway ways, {len(handler.way_sources):,} way-level source marks", flush=True)
 

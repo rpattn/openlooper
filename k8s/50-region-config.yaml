@@ -61,7 +61,16 @@ data:
   #
   # The default covers Staffordshire, Derbyshire and their immediate
   # neighbours — the southern Peak, Cannock Chase and Charnwood.
-  evidence-bbox: "-2.85,52.35,-1.05,53.45"
+  # England, Wales and Northern Ireland, plus whatever southern Scotland falls
+  # inside the rectangle. It also spans the Republic of Ireland, but the routing
+  # extract is united-kingdom, so there is no data there to cut and those cells
+  # come out empty.
+  #
+  # Northern Ireland is outside EPSG:27700's defined area, so matching there is
+  # degraded rather than exact — the 18 m association threshold and 25 m
+  # sections are computed on a grid that was never fitted to it. Included
+  # deliberately; treat NI evidence as indicative.
+  evidence-bbox: "-8.20,49.80,1.80,55.85"
 
   # ---- Evidence tiling -----------------------------------------------------
   # The evidence region is built one tile at a time and the tile databases are
@@ -72,8 +81,12 @@ data:
   # Columns and rows over evidence-bbox. Cut them small enough that the largest
   # tile's projected peak clears the Job's 12 Gi limit; the tiling step prints
   # a projection per tile before anything long starts.
-  tile-cols: "2"
-  tile-rows: "2"
+  # A grid this size is mostly sea. Empty cells cost one PBF read and are
+  # skipped rather than built, so erring towards more cells is cheap while an
+  # oversized land cell is not — the London and south-east cell is several times
+  # heavier than the average.
+  tile-cols: "7"
+  tile-rows: "6"
 
   # Degrees of context extracted beyond each cell. Tiles overlap by this much,
   # and prepare_evidence.py then writes only the ways whose midpoint falls in

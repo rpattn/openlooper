@@ -34,9 +34,17 @@ while IFS="$(printf '\t')" read -r index own extract; do
       --own-bbox="$own" \
       --output "$db" \
       --report "$report" \
+      --allow-empty \
       $WORKER_FLAG
   fi
-  merge_args="$merge_args --tile $db --tile-report $report"
+  # A cell that is all sea writes no database. That is a normal result of
+  # laying a grid over a coastline, not a failure, so it is left out of the
+  # merge rather than failing it.
+  if [ -s "$db" ]; then
+    merge_args="$merge_args --tile $db --tile-report $report"
+  else
+    echo "    (no highways in this cell; nothing to merge)"
+  fi
 done < "$TILES/manifest.tsv"
 
 echo "=== merging ==="
