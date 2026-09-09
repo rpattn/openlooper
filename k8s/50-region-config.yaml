@@ -81,12 +81,20 @@ data:
   # Columns and rows over evidence-bbox. Cut them small enough that the largest
   # tile's projected peak clears the Job's 12 Gi limit; the tiling step prints
   # a projection per tile before anything long starts.
-  # A grid this size is mostly sea. Empty cells cost one PBF read and are
-  # skipped rather than built, so erring towards more cells is cheap while an
-  # oversized land cell is not — the London and south-east cell is several times
-  # heavier than the average.
-  tile-cols: "7"
-  tile-rows: "6"
+  # Only a starting grid: any cell whose extract exceeds tile-max-bytes is split
+  # into four and re-cut until it fits. So this wants to be coarse. A uniform
+  # grid cannot work over a real country — at 7x6 over England, Wales and NI,
+  # eight cells held nothing while the cell containing London held 327 MB and
+  # projected 16 GiB against a 12 GiB ceiling. Making it finer everywhere to fix
+  # that one cell multiplies the empty ones, and every extra tile costs a full
+  # pass over the GPS intermediate.
+  tile-cols: "4"
+  tile-rows: "3"
+
+  # The largest a tile's PBF may be before it is split. Preparation peaks at
+  # roughly 50x the tile's PBF, so 220 MB projects about 10.7 GiB against the
+  # Job's 12 Gi limit. Raise the limit and this together, or neither.
+  tile-max-bytes: "220000000"
 
   # Degrees of context extracted beyond each cell. Tiles overlap by this much,
   # and prepare_evidence.py then writes only the ways whose midpoint falls in

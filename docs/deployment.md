@@ -511,11 +511,21 @@ a few GB for the shipped Midlands region and tens of GB for a UK-wide one, which
 is what the 500 GB disk is for. The original archive's checksums are carried
 into the database, so it still records what it was built from.
 
-Choosing a grid: `tile-cols` and `tile-rows` in `k8s/50-region-config.yaml`. The
-tiling step prints each tile's size and a projected peak before anything long
-starts — raise the grid until the largest clears the Job's 12 Gi limit. Tiles
-also resume: a completed tile is kept, so a failed run continues rather than
-restarting.
+The grid subdivides itself. `tile-cols` and `tile-rows` are only a starting
+point: any cell whose extract exceeds `tile-max-bytes` is split into four and
+re-cut, repeatedly, so cities end up finely divided and open sea stays in one
+piece.
+
+That is not a refinement, it is the only thing that works. A uniform 7x6 grid
+over England, Wales and Northern Ireland put eight cells over nothing at all
+while the cell holding London reached 327 MB — a projected 16 GiB against a
+12 GiB ceiling. Fixing that by making the grid finer everywhere multiplies the
+cells that were already empty, and each extra tile costs a full pass over the
+GPS intermediate. So the starting grid should be coarse.
+
+Ownership still partitions exactly across mixed depths, which is what makes the
+merge sound. Checked on a subdivided region: 300,000 sampled points and every
+cell corner owned by exactly one tile, no gaps and no overlaps.
 
 ### Disk
 

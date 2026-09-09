@@ -1,32 +1,35 @@
 #!/bin/sh
-# Cuts the evidence region into a grid of overlapping tiles. Runs in the osmium
-# image; the build loop that consumes the manifest runs in the evidence image.
+# Cuts the evidence region into tiles small enough to build one at a time.
 #
-#   tile_region.sh <region.pbf> <out-dir> <west,south,east,north> <cols> <rows> <margin-degrees>
+#   tile_region.sh <region.pbf> <out-dir> <w,s,e,n> <cols> <rows> <margin-deg> <max-tile-bytes>
+#
+# A uniform grid does not work over a real country. Measured on England, Wales
+# and Northern Ireland at 7x6: eight cells held nothing at all, while the cell
+# containing London held 327 MB and projected 16 GiB of preparation memory
+# against a 12 GiB ceiling. Making the grid finer everywhere to fix that one
+# cell multiplies the cells that were already empty, and every extra tile costs
+# a full pass over the GPS intermediate.
+#
+# So the grid is only a starting point. Any cell whose extract exceeds
+# max-tile-bytes is split into four and re-cut, repeatedly, until every tile
+# fits. Dense cities end up finely divided and open sea stays in one piece.
 #
 # Each tile is extracted with a margin of context beyond the cell it owns, and
-# prepare_evidence.py is later told to write only the ways whose midpoint falls
-# inside the cell. Both halves are needed:
-#
-#   Ownership without context attributes coordinates to the wrong way at cell
-#   edges, because the truly nearest way was cut away. Context without ownership
-#   keeps those wrong attributions in the union.
-#
-# The margin has to cover the largest neighbourhood any rule consults, and that
-# is not the 24 m matching radius — it is greenspace and water polygons, which
-# run to kilometres. Measured against a whole-region build, 0.002 degrees still
-# lost evidence up to 830 m from a boundary; 0.05 degrees reproduced it exactly.
+# prepare_evidence.py writes only the ways whose midpoint falls inside the cell.
+# Both halves are needed: ownership without context attributes coordinates to
+# the wrong way at cell edges, and context without ownership keeps those wrong
+# attributions in the union. The margin is sized by greenspace and water
+# polygons, which run to kilometres, not by the 24 m matching radius.
 set -eu
 
-PBF="$1"; OUT="$2"; BBOX="$3"; COLS="$4"; ROWS="$5"; MARGIN="$6"
+PBF="$1"; OUT="$2"; BBOX="$3"; COLS="$4"; ROWS="$5"; MARGIN="$6"; MAX_BYTES="$7"
+# Each split quarters a cell's area; four levels is a 256-fold reduction, which
+# is far past anything a real region needs and stops a pathological input from
+# looping forever.
+MAX_DEPTH=4
 
 mkdir -p "$OUT"
-
-# Tiles are named by index and both this script and build_tiles.sh keep finished
-# work so a failed run resumes. That is only safe while the grid is unchanged:
-# after re-tiling, tile-0 means a different piece of the world. Changing any
-# parameter therefore discards everything derived from the old one.
-GRID_ID="$BBOX|$COLS|$ROWS|$MARGIN"
+GRID_ID="$BBOX|$COLS|$ROWS|$MARGIN|$MAX_BYTES"
 if [ -f "$OUT/grid.id" ] && [ "$(cat "$OUT/grid.id")" != "$GRID_ID" ]; then
   echo "Grid changed:"
   echo "  was $(cat "$OUT/grid.id")"
@@ -36,41 +39,68 @@ if [ -f "$OUT/grid.id" ] && [ "$(cat "$OUT/grid.id")" != "$GRID_ID" ]; then
 fi
 printf '%s' "$GRID_ID" > "$OUT/grid.id"
 
+# Work queue of nominal cells: west south east north depth
 echo "$BBOX" | tr ',' ' ' | while read -r W S E N; do
-  awk -v w="$W" -v s="$S" -v e="$E" -v n="$N" -v cols="$COLS" -v rows="$ROWS" -v m="$MARGIN" '
+  awk -v w="$W" -v s="$S" -v e="$E" -v n="$N" -v cols="$COLS" -v rows="$ROWS" '
     BEGIN {
-      dx = (e - w) / cols; dy = (n - s) / rows; i = 0
-      for (c = 0; c < cols; c++) for (r = 0; r < rows; r++) {
-        ow = w + c * dx; oe = ow + dx; os = s + r * dy; on = os + dy
-        # Outer cells claim everything beyond the region so that no way sitting
-        # on the rim is owned by nobody. Interior edges stay exact, and the
-        # half-open test in prepare_evidence.py keeps them a partition.
-        if (c == 0) ow = -180; if (c == cols - 1) oe = 180
-        if (r == 0) os = -90;  if (r == rows - 1) on = 90
-        printf "%d\t%.6f,%.6f,%.6f,%.6f\t%.6f,%.6f,%.6f,%.6f\n", i++, ow, os, oe, on, \
-          w + c * dx - m, s + r * dy - m, w + (c + 1) * dx + m, s + (r + 1) * dy + m
-      }
-    }' > "$OUT/manifest.tsv"
+      dx = (e - w) / cols; dy = (n - s) / rows
+      for (c = 0; c < cols; c++) for (r = 0; r < rows; r++)
+        printf "%.6f %.6f %.6f %.6f 0\n", w + c*dx, s + r*dy, w + (c+1)*dx, s + (r+1)*dy
+    }' > "$OUT/queue"
 done
 
-total=$(wc -l < "$OUT/manifest.tsv")
-echo "Cutting $total tiles from $PBF with a ${MARGIN} degree context margin."
-while IFS="$(printf '\t')" read -r index own extract; do
+REGION_W=$(echo "$BBOX" | cut -d, -f1); REGION_S=$(echo "$BBOX" | cut -d, -f2)
+REGION_E=$(echo "$BBOX" | cut -d, -f3); REGION_N=$(echo "$BBOX" | cut -d, -f4)
+
+: > "$OUT/manifest.tsv"
+index=0
+splits=0
+echo "Cutting tiles from $PBF, splitting any above $MAX_BYTES bytes."
+while [ -s "$OUT/queue" ]; do
+  read -r cw cs ce cn depth < "$OUT/queue"
+  sed -i '1d' "$OUT/queue"
+
   target="$OUT/tile-$index.osm.pbf"
-  if [ -s "$target" ]; then
-    echo "  tile $index: already extracted, keeping it"
-  else
+  extract=$(awk -v w="$cw" -v s="$cs" -v e="$ce" -v n="$cn" -v m="$MARGIN" \
+    'BEGIN { printf "%.6f,%.6f,%.6f,%.6f", w-m, s-m, e+m, n+m }')
+  if [ ! -s "$target" ]; then
     # smart keeps ways whole and completes the multipolygon relations that
     # greenspace and water are built from.
-    partial="$OUT/tile-$index.partial.osm.pbf"
-    osmium extract --overwrite --strategy smart --bbox "$extract" "$PBF" -o "$partial"
-    mv "$partial" "$target"
+    osmium extract --overwrite --strategy smart --bbox "$extract" "$PBF" -o "$target.partial.osm.pbf"
+    mv "$target.partial.osm.pbf" "$target"
   fi
   size=$(wc -c < "$target")
-  awk -v i="$index" -v b="$size" -v own="$own" \
-    'BEGIN { printf "  tile %s: %8.1f MB  owns %s  projected peak %.1f GiB\n", i, b/1048576, own, b*50/1073741824 }'
-done < "$OUT/manifest.tsv"
+
+  if [ "$size" -gt "$MAX_BYTES" ] && [ "$depth" -lt "$MAX_DEPTH" ]; then
+    rm -f "$target"
+    splits=$((splits + 1))
+    awk -v w="$cw" -v s="$cs" -v e="$ce" -v n="$cn" -v d="$depth" 'BEGIN {
+      mx = (w + e) / 2; my = (s + n) / 2; d1 = d + 1
+      printf "%.6f %.6f %.6f %.6f %d\n", w, s, mx, my, d1
+      printf "%.6f %.6f %.6f %.6f %d\n", mx, s, e, my, d1
+      printf "%.6f %.6f %.6f %.6f %d\n", w, my, mx, n, d1
+      printf "%.6f %.6f %.6f %.6f %d\n", mx, my, e, n, d1
+    }' >> "$OUT/queue"
+    awk -v s="$size" -v m="$MAX_BYTES" 'BEGIN { printf "  %.1f MB is over the %.0f MB limit; splitting into four\n", s/1048576, m/1048576 }'
+    continue
+  fi
+
+  # Cells on the rim claim everything beyond the region, so no way sitting just
+  # outside it is owned by nobody. Interior edges stay exact, and the half-open
+  # test in prepare_evidence.py keeps them a partition.
+  own=$(awk -v w="$cw" -v s="$cs" -v e="$ce" -v n="$cn" \
+             -v rw="$REGION_W" -v rs="$REGION_S" -v re="$REGION_E" -v rn="$REGION_N" 'BEGIN {
+    if (w <= rw + 1e-9) w = -180; if (e >= re - 1e-9) e = 180
+    if (s <= rs + 1e-9) s = -90;  if (n >= rn - 1e-9) n = 90
+    printf "%.6f,%.6f,%.6f,%.6f", w, s, e, n
+  }')
+  printf '%d\t%s\t%s\n' "$index" "$own" "$extract" >> "$OUT/manifest.tsv"
+  awk -v i="$index" -v b="$size" -v own="$own" -v d="$depth" \
+    'BEGIN { printf "  tile %-3s depth %s %8.1f MB  projected peak %5.1f GiB  owns %s\n", i, d, b/1048576, b*50/1073741824, own }'
+  index=$((index + 1))
+done
+rm -f "$OUT/queue"
 
 echo
-echo "Largest tile decides peak memory. Raise cols/rows if any projected peak"
-echo "is near the Job's limit; the whole region is the sum of the cells either way."
+awk -v n="$index" -v s="$splits" 'BEGIN { printf "%d tiles after %d split(s).\n", n, s }'
+echo "Empty tiles cost one PBF read and are skipped by the build."

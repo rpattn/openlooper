@@ -119,6 +119,7 @@ spec:
             - $(TILE_COLS)
             - $(TILE_ROWS)
             - $(TILE_MARGIN)
+            - $(TILE_MAX_BYTES)
           env:
             - name: EVIDENCE_BBOX
               valueFrom:
@@ -132,6 +133,9 @@ spec:
             - name: TILE_MARGIN
               valueFrom:
                 configMapKeyRef: { name: openlooper-region, key: tile-margin }
+            - name: TILE_MAX_BYTES
+              valueFrom:
+                configMapKeyRef: { name: openlooper-region, key: tile-max-bytes }
           volumeMounts:
             - name: evidence-data
               mountPath: /evidence
