@@ -965,6 +965,16 @@ def main() -> None:
             f" {before - len(evidence):,} evidenced sections belong to neighbouring tiles",
             flush=True,
         )
+        if not ways:
+            # A cell can hold no ways of its own even when its extract is full
+            # of them: every way in range belongs to a neighbour. Rim cells over
+            # water do this routinely. The earlier no-highways check runs before
+            # ownership is applied, so it does not catch this.
+            message = "This cell owns none of them; nothing to build."
+            if args.allow_empty:
+                print(message, flush=True)
+                return
+            raise SystemExit(message)
 
     pbf_sha256 = sha256_file(args.pbf)
     built_at = datetime.now(timezone.utc).isoformat()
@@ -1024,7 +1034,9 @@ def main() -> None:
         "stored_sections": len(evidence),
         "evidenced_sections_by_source": source_sections,
         "evidenced_length_m_by_source": source_lengths,
-        "any_use_evidence_distance_pct": round(100 * any_use_length / network_length, 3),
+        "any_use_evidence_distance_pct": (
+            round(100 * any_use_length / network_length, 3) if network_length else 0.0
+        ),
         "output_database_bytes": args.output.stat().st_size,
     }
     args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
