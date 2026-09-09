@@ -86,14 +86,25 @@ spec:
           command: ["/bin/sh", "-eu", "-c"]
           args:
             - |
-              echo "curl $(curl --version | head -1)"
               url="$(cat /config/routing-url)"
               echo "routing-url: ${url:-<empty, will merge the county list>}"
               if [ -n "$url" ]; then
-                # One extract, used as-is. `cat` rather than `mv` so a re-run
-                # does not consume the resumable download.
-                osmium fileinfo /routing/sources/routing-source.osm.pbf > /dev/null
-                cat /routing/sources/routing-source.osm.pbf > /routing/local-region.osm.pbf
+                source=/routing/sources/routing-source.osm.pbf
+                osmium fileinfo "$source" > /dev/null
+                # Copy only when the destination is not already this file.
+                # Re-copying 2.1 GB on every run wastes minutes and, if the
+                # write is ever short, leaves a truncated PBF whose failure
+                # ("invalid BlobHeader size") points at the wrong thing.
+                if [ "$(wc -c < "$source")" = "$([ -f /routing/local-region.osm.pbf ] && wc -c < /routing/local-region.osm.pbf || echo 0)" ]; then
+                  echo "  routing PBF already in place, not re-copying"
+                else
+                  echo "  copying $(wc -c < "$source") bytes into place…"
+                  cp "$source" /routing/local-region.osm.pbf.partial
+                  mv /routing/local-region.osm.pbf.partial /routing/local-region.osm.pbf
+                fi
+                # Prove what we are about to cut from is readable, so a bad
+                # copy fails here rather than inside the extract.
+                osmium fileinfo /routing/local-region.osm.pbf > /dev/null
               else
                 set --
                 while read -r county; do
