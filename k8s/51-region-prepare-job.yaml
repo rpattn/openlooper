@@ -38,23 +38,35 @@ spec:
               mkdir -p /routing/sources
               fetch() {
                 echo "==> $1"
-                # Resuming an already-complete file asks for a range past its
-                # end, which Geofabrik answers 416 and --fail turns into a
-                # failed Job. Widening the evidence region re-runs this Job, so
-                # compare sizes first and only download when they differ.
-                # Never fatal: this only decides whether to skip a download.
-                # Under set -e a failing probe would otherwise kill the script
-                # silently, because --silent means it prints nothing either.
-                # Falling through to the real download reports the actual error.
-                remote=$(curl --fail --silent --show-error --location --head "$1" \
-                         | tr -d '\r' | awk 'tolower($1)=="content-length:"{v=$2} END{print v+0}' \
-                         || echo 0)
+                marker="$2.remote"
+                # Never fatal: this only decides whether to skip or resume.
+                # Under set -e a failing probe would kill the script silently,
+                # because --silent prints nothing either.
+                head=$(curl --fail --silent --show-error --location --head "$1" \
+                       | tr -d '\r' || true)
+                remote=$(echo "$head" | awk 'tolower($1)=="content-length:"{v=$2} END{print v+0}')
+                # Identify *which* file the remote is offering, not just its
+                # size. Geofabrik republishes these daily, and resuming a
+                # partial download against a newer extract splices the head of
+                # one file onto the tail of another. The result has exactly the
+                # expected length and a valid header, so it passes every cheap
+                # check and fails much later, deep inside an osmium read.
+                id="len=$remote $(echo "$head" | awk '
+                  tolower($1)=="last-modified:" || tolower($1)=="etag:" {print tolower($0)}' | sort | tr -d ' \t')"
+                was=$([ -f "$marker" ] && cat "$marker" || echo "")
+                if [ "$was" != "$id" ]; then
+                  [ -n "$was" ] && echo "    remote changed since the last attempt; starting fresh"
+                  rm -f "$2"
+                  # Written before the download, so a later run can tell a
+                  # resumable partial from a stale one.
+                  printf '%s' "$id" > "$marker"
+                fi
                 have=$([ -f "$2" ] && wc -c < "$2" || echo 0)
                 if [ "$remote" -gt 0 ] && [ "$have" -eq "$remote" ]; then
                   echo "    already complete ($have bytes); delete it to refresh"
                 else
-                  # --continue-at resumes a partial file; Geofabrik supports
-                  # ranges, so an interrupted download does not start over.
+                  # Safe to resume: the marker says this partial belongs to the
+                  # file the server is currently offering.
                   curl --fail --location --retry 5 --connect-timeout 20 \
                        --continue-at - --remote-time --output "$2" "$1"
                 fi
@@ -102,9 +114,13 @@ spec:
                   cp "$source" /routing/local-region.osm.pbf.partial
                   mv /routing/local-region.osm.pbf.partial /routing/local-region.osm.pbf
                 fi
-                # Prove what we are about to cut from is readable, so a bad
-                # copy fails here rather than inside the extract.
-                osmium fileinfo /routing/local-region.osm.pbf > /dev/null
+                # -e reads the whole file rather than just the header. A
+                # plain fileinfo passes on a PBF whose header is intact and
+                # whose middle is spliced, which is what a resumed download
+                # against a changed remote produces, so the cheap check is
+                # precisely the one that would miss it.
+                echo "  verifying the routing PBF end to end…"
+                osmium fileinfo -e /routing/local-region.osm.pbf > /dev/null
               else
                 set --
                 while read -r county; do
