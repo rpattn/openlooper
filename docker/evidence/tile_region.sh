@@ -35,7 +35,8 @@ if [ -f "$OUT/grid.id" ] && [ "$(cat "$OUT/grid.id")" != "$GRID_ID" ]; then
   echo "  was $(cat "$OUT/grid.id")"
   echo "  now $GRID_ID"
   echo "Discarding tiles built for the previous grid."
-  rm -f "$OUT"/tile-*.osm.pbf "$OUT"/tile-*.sqlite "$OUT"/tile-*.json "$OUT"/manifest.tsv
+  rm -f "$OUT"/tile-*.osm.pbf "$OUT"/tile-*.bbox "$OUT"/tile-*.sqlite \
+        "$OUT"/tile-*.json "$OUT"/gps-*.tar "$OUT"/manifest.tsv
 fi
 printf '%s' "$GRID_ID" > "$OUT/grid.id"
 
@@ -61,18 +62,30 @@ while [ -s "$OUT/queue" ]; do
   sed -i '1d' "$OUT/queue"
 
   target="$OUT/tile-$index.osm.pbf"
+  sidecar="$OUT/tile-$index.bbox"
   extract=$(awk -v w="$cw" -v s="$cs" -v e="$ce" -v n="$cn" -v m="$MARGIN" \
     'BEGIN { printf "%.6f,%.6f,%.6f,%.6f", w-m, s-m, e+m, n+m }')
-  if [ ! -s "$target" ]; then
+  # Reuse is keyed to the cell, never to the index. Index only advances when a
+  # tile is emitted, so while a cell is being split this filename is written and
+  # discarded for several different candidates and finally holds whichever one
+  # fit. Trusting it by name on a later run hands a big cell the small extract
+  # left behind by another, which then looks as though it fits and is emitted
+  # with the wrong geometry entirely.
+  if [ -s "$target" ] && [ -f "$sidecar" ] && [ "$(cat "$sidecar")" = "$extract" ]; then
+    :
+  else
+    # Anything derived from the old contents of this index is now stale.
+    rm -f "$target" "$sidecar" "$OUT/tile-$index.sqlite" "$OUT/tile-$index.json" "$OUT/gps-$index.tar"
     # smart keeps ways whole and completes the multipolygon relations that
     # greenspace and water are built from.
     osmium extract --overwrite --strategy smart --bbox "$extract" "$PBF" -o "$target.partial.osm.pbf"
     mv "$target.partial.osm.pbf" "$target"
+    printf '%s' "$extract" > "$sidecar"
   fi
   size=$(wc -c < "$target")
 
   if [ "$size" -gt "$MAX_BYTES" ] && [ "$depth" -lt "$MAX_DEPTH" ]; then
-    rm -f "$target"
+    rm -f "$target" "$sidecar"
     splits=$((splits + 1))
     awk -v w="$cw" -v s="$cs" -v e="$ce" -v n="$cn" -v d="$depth" 'BEGIN {
       mx = (w + e) / 2; my = (s + n) / 2; d1 = d + 1
