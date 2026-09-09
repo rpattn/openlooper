@@ -7,13 +7,17 @@
 #   fetch-gps   downloads and md5-checks the 21 GB archive (kept afterwards)
 #   prefilter   one pass over it, keeping only members that could hold a
 #               coordinate in this region, written uncompressed
-#   tile        cuts the region into overlapping tiles
+#   tile        cuts the region into tiles, splitting any that are too big
+#   partition   splits the intermediate into one archive per tile
 #   build       one prepare_evidence.py per tile, then merges them
 #
-# The prefilter exists because every tile build streams the archive, and
-# decompressing 21 GB of xz is single-core: a floor of about forty minutes per
-# pass. Inflating once and reading a plain tar afterwards removes that floor
-# from every tile.
+# The prefilter exists because decompressing 21 GB of xz is single-core: a floor
+# of about forty minutes. Inflating once removes that from every tile.
+#
+# The partition exists because what was left still had to be read in full by
+# every tile. At 23 GB that is fourteen minutes each, so thirty tiles spent
+# seven hours reading the same bytes to discard almost all of them. Splitting it
+# once costs one pass and some disk, and a tile then reads only its own slice.
 #
 # The tiling exists because preparation holds the whole region's index in RAM.
 # Tiles bound that by construction, and the merge is exact — verified against a
@@ -161,6 +165,29 @@ spec:
               memory: 1Gi
             limits:
               memory: 6Gi
+
+        - name: partition
+          image: rpattn/openlooper-evidence:latest
+          imagePullPolicy: Always
+          command: ["python", "/app/partition_gps.py"]
+          args:
+            - --gps-archive=/gps/filtered.tar
+            - --manifest=/evidence/tiles/manifest.tsv
+            - --out-dir=/evidence/tiles
+          volumeMounts:
+            - name: gps-archive
+              mountPath: /gps
+              readOnly: true
+            - name: evidence-data
+              mountPath: /evidence
+          resources:
+            requests:
+              cpu: "1"
+              memory: 512Mi
+            # Holds one open tar writer per tile plus a member at a time, so
+            # this is bounded by tile count rather than by the archive.
+            limits:
+              memory: 4Gi
 
       containers:
         - name: build

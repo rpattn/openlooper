@@ -502,14 +502,32 @@ against the same region built in one process:
 Ownership also partitions cleanly: every way is owned by exactly one tile, so the
 merge reported zero duplicate sections.
 
-The GPS archive is prefiltered once. Every tile build streams it, and
-decompressing 21 GB of xz is single-core — a floor of roughly forty minutes per
-pass, which ten tiles would pay ten times. `prefilter_gps.py` inflates it once,
-keeps the members whose bytes could hold a coordinate in the region, and writes
-them uncompressed; the tile builds then read at disk speed. The intermediate is
-a few GB for the shipped Midlands region and tens of GB for a UK-wide one, which
-is what the 500 GB disk is for. The original archive's checksums are carried
-into the database, so it still records what it was built from.
+The GPS archive is handled in two passes, both once rather than per tile.
+
+`prefilter_gps.py` inflates the 21 GB of xz once, keeps the members whose bytes
+could hold a coordinate anywhere in the region, and writes them uncompressed.
+Decompressing xz is single-core and costs about forty minutes; without this every
+tile would pay it.
+
+`partition_gps.py` then splits that intermediate into one archive per tile. This
+is what makes a large region practical: the intermediate for England, Wales and
+Northern Ireland is 23 GB, and reading it takes about fourteen minutes, so thirty
+tiles spent seven hours reading the same bytes to discard almost all of them.
+Splitting it costs one pass and some disk, and a tile then reads only its slice.
+
+The naive way to split is slower than what it replaces — testing each member
+against every tile's byte prefixes is one scan per tile. Instead each member is
+scanned once for the integer parts of its own coordinates, and a tile takes it
+when those overlap the degree bands its bounding box can hold. Same
+necessary-condition test, computed once.
+
+A member near a degree boundary lands in every tile whose bands it touches, so
+the slices together are larger than the intermediate — the partition report
+records that factor. That duplication is the cost of never scanning the whole
+intermediate again, and 500 GB of disk is what pays it.
+
+The original archive's checksums are carried through both passes, so the
+database still records what it was built from.
 
 The grid subdivides itself. `tile-cols` and `tile-rows` are only a starting
 point: any cell whose extract exceeds `tile-max-bytes` is split into four and

@@ -27,9 +27,14 @@ while IFS="$(printf '\t')" read -r index own extract; do
     echo "=== tile $index: already built, keeping it ==="
   else
     echo "=== tile $index: building, owns $own ==="
+    # Prefer this tile's own slice of the archive. Falling back to the shared
+    # intermediate keeps the script working if the partition step is skipped,
+    # only far more slowly: the shared file is scanned in full by every tile.
+    slice="$TILES/gps-$index.tar"
+    [ -s "$slice" ] || slice="$ARCHIVE"
     python /app/prepare_evidence.py \
       --pbf "$TILES/tile-$index.osm.pbf" \
-      --gps-archive "$ARCHIVE" \
+      --gps-archive "$slice" \
       --gps-provenance "$PROVENANCE" \
       --own-bbox="$own" \
       --output "$db" \
