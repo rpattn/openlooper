@@ -156,9 +156,11 @@ spec:
             - /gps/filtered.provenance.json
             - /evidence/route-use-evidence.sqlite.next
             - /evidence/build-report.json.next
-            # Matching is parallel, but reading the intermediate is not, so more
-            # than eight workers buys little.
-            - "8"
+            # "auto" lets prepare_evidence.py size the pool from the cores it
+            # can actually see, rather than a number written on a different
+            # machine. Reading the intermediate is serial and sets the floor, so
+            # oversubscribing buys nothing.
+            - auto
           volumeMounts:
             - name: evidence-data
               mountPath: /evidence
@@ -167,7 +169,11 @@ spec:
               readOnly: true
           resources:
             requests:
-              cpu: "4"
+              # A scheduling floor, not a cap. There is no CPU limit, so the
+              # build uses whatever the node has spare anyway; asking for more
+              # here only risks the pod sitting Pending forever on a small node
+              # beside Valhalla and whatever else the cluster runs.
+              cpu: "1"
               memory: 4Gi
             # Peak is set by the largest tile, not the region: preparation runs
             # about 29x a tile's PBF for the network phase and roughly 50x for a

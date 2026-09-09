@@ -10,6 +10,15 @@ set -eu
 
 TILES="$1"; PBF="$2"; ARCHIVE="$3"; PROVENANCE="$4"; OUTPUT="$5"; REPORT="$6"; WORKERS="$7"
 
+# "auto" defers to prepare_evidence.py, which sizes the pool from the cores it
+# can actually see rather than from a number written months ago on a different
+# machine.
+if [ "$WORKERS" = "auto" ]; then
+  WORKER_FLAG=""
+else
+  WORKER_FLAG="--workers $WORKERS"
+fi
+
 merge_args=""
 while IFS="$(printf '\t')" read -r index own extract; do
   db="$TILES/tile-$index.sqlite"
@@ -25,7 +34,7 @@ while IFS="$(printf '\t')" read -r index own extract; do
       --own-bbox="$own" \
       --output "$db" \
       --report "$report" \
-      --workers "$WORKERS"
+      $WORKER_FLAG
   fi
   merge_args="$merge_args --tile $db --tile-report $report"
 done < "$TILES/manifest.tsv"
